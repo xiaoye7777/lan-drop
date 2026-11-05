@@ -1,0 +1,19 @@
+{
+  "name": "lan-drop",
+  "version": "0.1.0",
+  "description": "内网文件传输和文字沟通工具，同事用浏览器打开即可",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
+    "start": "node dist/server/main.js",
+    "test": "npm run build && node --test dist/test/server.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^7.0.2"
+  }
+}

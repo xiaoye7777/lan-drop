@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# 运行数据：访问口令、聊天记录、上传的文件，都不能进仓库
+data/
+.DS_Store
