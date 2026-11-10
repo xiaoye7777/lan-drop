@@ -5,9 +5,20 @@ import { LIMITS } from '../../shared/catalog.js';
 import type { SessionInfo } from '../../shared/types.js';
 import { AVATAR_MAX_BYTES, STICKER_MAX_BYTES } from '../config.js';
 import type { AppContext, Route } from '../context.js';
+import { isAdmin, isSecure } from '../context.js';
 import { cleanLine, clientIp, HttpError, readCookie, readJson, sendJson } from '../http.js';
 
-export const COOKIE_NAME = 'lan_drop_session';
+/**
+ * https 和 http 用不同名字的 Cookie。
+ * https 的 Cookie 带 Secure 标记，浏览器不会把它发给 http；分开命名，
+ * 是为了让 http 登录时写入的 Cookie 不会和 https 的同名 Cookie 冲突（浏览器不允许 http 覆盖 Secure Cookie）。
+ */
+const SECURE_COOKIE = 'lan_drop_session';
+const PLAIN_COOKIE = 'lan_drop_http';
+
+export function sessionCookieName(req: IncomingMessage): string {
+  return isSecure(req) ? SECURE_COOKIE : PLAIN_COOKIE;
+}
 
 /** 登录失败限制：同一 IP 在时间窗口内失败太多次，就暂时拒绝，防止猜口令 */
 const LOGIN_MAX_FAILURES = 10;
@@ -31,8 +42,12 @@ export function authRoutes(ctx: AppContext): Route[] {
   const { config, store, hub } = ctx;
   const loginFailures = new Map<string, { count: number; resetAt: number }>();
 
-  function cookie(value: string, maxAge: number): string {
-    return `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${ctx.secure ? '; Secure' : ''}`;
+  function setCookie(req: IncomingMessage, res: ServerResponse, value: string, maxAge: number): void {
+    const secure = isSecure(req);
+    res.setHeader(
+      'Set-Cookie',
+      `${sessionCookieName(req)}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
+    );
   }
 
   async function login(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -51,30 +66,38 @@ export function authRoutes(ctx: AppContext): Route[] {
     const existing = store.findUserByNameAndIp(name, ip);
     assertNameAvailable(ctx, name, existing?.id);
     const user = existing ?? store.createUser(name, ip);
-    res.setHeader('Set-Cookie', cookie(store.createSession(user.id), Math.floor(config.sessionTtlMs / 1000)));
+    setCookie(req, res, store.createSession(user.id), Math.floor(config.sessionTtlMs / 1000));
     ctx.broadcastUsers();
     sendJson(res, 200, { ok: true });
   }
 
   function logout(req: IncomingMessage, res: ServerResponse): void {
-    const token = readCookie(req, COOKIE_NAME);
+    const token = readCookie(req, sessionCookieName(req));
     if (token) store.deleteSession(token);
-    res.setHeader('Set-Cookie', cookie('', 0));
+    setCookie(req, res, '', 0);
     sendJson(res, 200, { ok: true });
   }
 
   function session(req: IncomingMessage, res: ServerResponse): void {
     const user = ctx.requireUser(req);
+    // 登录状态在服务器上已经顺延，Cookie 的有效期也一起顺延
+    const token = readCookie(req, sessionCookieName(req));
+    if (token) setCookie(req, res, token, Math.floor(config.sessionTtlMs / 1000));
+    const recent = store.recentFor(user.id, LIMITS.historyPage);
     const body: SessionInfo = {
       me: ctx.toUserInfo(user),
       users: store.listUsers().map(ctx.toUserInfo),
-      messages: store.messagesFor(user.id),
+      messages: recent.messages,
+      older: recent.older,
       stickers: store.listStickers(),
       limits: {
         maxFileBytes: config.maxFileBytes,
         maxStickerBytes: STICKER_MAX_BYTES,
         maxAvatarBytes: AVATAR_MAX_BYTES,
       },
+      remarks: user.remarks ?? {},
+      storage: store.storageInfo(),
+      admin: isAdmin(req, config),
     };
     sendJson(res, 200, body);
   }
@@ -94,7 +117,13 @@ export function authRoutes(ctx: AppContext): Route[] {
     });
   }
 
+  /** 不用登录就能看的基本信息：服务器有没有加密地址 */
+  function info(_req: IncomingMessage, res: ServerResponse): void {
+    sendJson(res, 200, { https: ctx.httpsAvailable });
+  }
+
   return [
+    { method: 'GET', path: '/api/info', handler: info },
     { method: 'POST', path: '/api/login', handler: login },
     { method: 'POST', path: '/api/logout', handler: logout },
     { method: 'GET', path: '/api/session', handler: session },

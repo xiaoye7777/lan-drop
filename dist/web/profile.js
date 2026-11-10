@@ -3,7 +3,7 @@ import { BUBBLES, LIMITS, NAMEPLATES, TIER_NAMES } from '../shared/catalog.js';
 import * as api from './api.js';
 import { CHAT_BACKGROUNDS, currentChatBackground, setChatBackground, setCustomChatBackground } from './chat-background.js';
 import { bubbleClass, nameplateClass, renderAvatar } from './components.js';
-import { h, openDialog, showToast } from './dom.js';
+import { h, openDialog, promptText, showToast } from './dom.js';
 import { formatSize } from './format.js';
 import { handleError, rerender, state } from './state.js';
 /** 更新自己的资料后，同步到 state 里的两份数据 */
@@ -35,23 +35,62 @@ async function cropAvatar(file) {
         URL.revokeObjectURL(url);
     }
 }
-/** 名片：头像 + 名字 + 签名，背景是名片背景。资料卡和个人主页的预览共用 */
-function renderNameplateBanner(user, extra) {
-    return h('div', { className: `profile-banner ${nameplateClass(user.nameplate)}` }, renderAvatar(user, 'xl'), h('div', { className: 'profile-banner-text' }, h('div', { className: 'profile-name' }, user.name), h('div', { className: 'profile-bio' }, user.bio || '这个人很懒，什么都没写'), extra && h('div', { className: 'profile-extra' }, extra)));
+/** 名片：头像 + 名字 + 签名，背景是名片背景。资料卡和个人主页的预览共用。title 不传时显示昵称 */
+function renderNameplateBanner(user, extra, title = user.name) {
+    return h('div', { className: `profile-banner ${nameplateClass(user.nameplate)}` }, renderAvatar(user, 'xl'), h('div', { className: 'profile-banner-text' }, h('div', { className: 'profile-name' }, title), h('div', { className: 'profile-bio' }, user.bio || '这个人很懒，什么都没写'), extra && h('div', { className: 'profile-extra' }, extra)));
+}
+/** 修改给同事的备注。备注只保存在自己的账号里，对方看不到 */
+async function editRemark(user) {
+    const remark = await promptText(`给 ${user.name} 设置备注`, {
+        placeholder: '只有你自己能看到，留空表示清除',
+        value: state.remarks[user.id] ?? '',
+        maxLength: LIMITS.remarkLength,
+        allowEmpty: true,
+    });
+    if (remark === null)
+        return false;
+    try {
+        state.remarks = (await api.setRemark(user.id, remark)).remarks;
+        rerender();
+        return true;
+    }
+    catch (err) {
+        handleError(err);
+        return false;
+    }
 }
 /** 查看同事的资料卡 */
-export function openUserCard(userId, onMessage) {
+export function openUserCard(userId, actions) {
     const user = state.users.find((item) => item.id === userId);
     if (!user)
         return;
     const isMe = user.id === state.me?.id;
-    const dialog = openDialog('user-card', renderNameplateBanner(user, `${user.online ? '在线' : '离线'} · ${user.ip}`), h('div', { className: 'dialog-actions' }, h('span', { className: 'spacer' }), h('button', { className: 'btn btn-ghost', type: 'button', onclick: () => dialog.close() }, '关闭'), !isMe &&
+    const remark = state.remarks[user.id];
+    const extra = [remark ? `昵称：${user.name}` : '', user.online ? '在线' : '离线', user.ip].filter(Boolean).join(' · ');
+    const dialog = openDialog('user-card', renderNameplateBanner(user, extra, remark || user.name), h('div', { className: 'dialog-actions' }, !isMe &&
+        h('button', {
+            className: 'btn btn-ghost',
+            type: 'button',
+            onclick: async () => {
+                if (await editRemark(user)) {
+                    dialog.close();
+                    openUserCard(userId, actions);
+                }
+            },
+        }, remark ? '修改备注' : '设置备注'), h('button', {
+        className: 'btn btn-ghost',
+        type: 'button',
+        onclick: () => {
+            dialog.close();
+            actions.nudge(user.id);
+        },
+    }, '拍一拍'), h('span', { className: 'spacer' }), h('button', { className: 'btn btn-ghost', type: 'button', onclick: () => dialog.close() }, '关闭'), !isMe &&
         h('button', {
             className: 'btn btn-primary',
             type: 'button',
             onclick: () => {
                 dialog.close();
-                onMessage(user.id);
+                actions.message(user.id);
             },
         }, '发消息')));
 }
@@ -78,6 +117,12 @@ export function openMyProfile(onLogout) {
         return;
     // 编辑中的资料，点保存才提交
     const draft = { name: me.name, bio: me.bio, nameplate: me.nameplate, bubble: me.bubble };
+    const nudgeInput = h('input', {
+        className: 'input',
+        value: me.nudgeSuffix,
+        maxLength: LIMITS.nudgeSuffixLength,
+        placeholder: '比如：的小脑袋',
+    });
     const preview = h('div', { className: 'profile-preview' });
     const updatePreview = () => preview.replaceChildren(renderNameplateBanner({ ...(state.me ?? me), ...draft }));
     updatePreview();
@@ -171,6 +216,8 @@ export function openMyProfile(onLogout) {
             patch.nameplate = draft.nameplate;
         if (draft.bubble !== current.bubble)
             patch.bubble = draft.bubble;
+        if (nudgeInput.value.trim() !== current.nudgeSuffix)
+            patch.nudgeSuffix = nudgeInput.value;
         try {
             if (Object.keys(patch).length > 0)
                 applyMe(await api.updateProfile(patch));
@@ -182,7 +229,7 @@ export function openMyProfile(onLogout) {
             error.hidden = false;
         }
     };
-    const dialog = openDialog('profile-dialog', h('form', { onsubmit: save }, h('h2', {}, '个人主页'), preview, avatarActions, h('div', { className: 'field-row' }, h('label', { className: 'field' }, h('span', {}, '昵称'), nameInput), h('label', { className: 'field' }, h('span', {}, '签名'), bioInput)), h('section', { className: 'profile-section' }, h('h3', {}, '名片背景', h('small', {}, '同事列表和资料卡里显示')), nameplates), h('section', { className: 'profile-section' }, h('h3', {}, '聊天气泡', h('small', {}, '大家看到你的消息都是这个样式')), bubbles), h('section', { className: 'profile-section' }, h('h3', {}, '聊天背景', h('small', {}, '只保存在这台电脑上，别人看不到')), backgrounds, h('label', { className: 'btn btn-ghost btn-small' }, backgroundInput, '用自己的图片')), error, h('div', { className: 'dialog-actions' }, h('button', {
+    const dialog = openDialog('profile-dialog', h('form', { onsubmit: save }, h('h2', {}, '个人主页'), preview, avatarActions, h('div', { className: 'field-row' }, h('label', { className: 'field' }, h('span', {}, '昵称'), nameInput), h('label', { className: 'field' }, h('span', {}, '签名'), bioInput)), h('label', { className: 'field' }, h('span', {}, '拍一拍后缀', h('small', {}, '别人双击你的头像时显示“某某 拍了拍 你”+ 这句话')), nudgeInput), h('section', { className: 'profile-section' }, h('h3', {}, '名片背景', h('small', {}, '同事列表和资料卡里显示')), nameplates), h('section', { className: 'profile-section' }, h('h3', {}, '聊天气泡', h('small', {}, '大家看到你的消息都是这个样式')), bubbles), h('section', { className: 'profile-section' }, h('h3', {}, '聊天背景', h('small', {}, '只保存在这台电脑上，别人看不到')), backgrounds, h('label', { className: 'btn btn-ghost btn-small' }, backgroundInput, '用自己的图片')), error, h('div', { className: 'dialog-actions' }, h('button', {
         className: 'btn btn-ghost btn-danger',
         type: 'button',
         onclick: () => {

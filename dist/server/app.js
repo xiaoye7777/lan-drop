@@ -5,9 +5,10 @@ import { createServer as createHttpsServer } from 'node:https';
 import { createServer as createNetServer } from 'node:net';
 import { extname, join } from 'node:path';
 import { PROJECT_ROOT } from './config.js';
+import { isSecure } from './context.js';
 import { EventHub } from './events.js';
 import { clientIp, HttpError, readCookie, sendJson } from './http.js';
-import { authRoutes, COOKIE_NAME } from './routes/auth.js';
+import { authRoutes, sessionCookieName } from './routes/auth.js';
 import { fileRoutes } from './routes/files.js';
 import { messageRoutes } from './routes/messages.js';
 import { profileRoutes } from './routes/profile.js';
@@ -50,22 +51,19 @@ function buildStaticFiles() {
         files.set('/', index);
     return files;
 }
-/** 防止其他网站借用同事浏览器里的 Cookie 发请求。浏览器发 POST 时一定会带 Origin */
+/**
+ * 防止其他网站借用同事浏览器里的 Cookie 发请求。浏览器发 POST 时一定会带 Origin。
+ * 协议也要一致：http:// 的页面不能操作 https:// 的登录状态，反过来也一样
+ */
 function checkOrigin(req) {
     const origin = req.headers.origin;
     if (!origin)
         return;
-    let originHost;
-    try {
-        originHost = new URL(origin).host;
-    }
-    catch {
-        // 格式不对，按不匹配处理
-    }
-    if (originHost !== req.headers.host)
+    const expected = `${isSecure(req) ? 'https' : 'http'}://${req.headers.host ?? ''}`;
+    if (origin !== expected)
         throw new HttpError(403, '请求来源不被允许');
 }
-/** 有人用 http:// 访问 HTTPS 端口时，告诉浏览器改用 https:// */
+/** 设置了只允许 HTTPS 时，有人用 http:// 访问，就告诉浏览器改用 https:// */
 function redirectToHttps(req, res) {
     const host = req.headers.host ?? '';
     // Host 头只允许出现主机名、IP 和端口，防止被拼出奇怪的跳转地址
@@ -81,6 +79,7 @@ export function createApp(config, options = {}) {
     const store = new Store(config);
     const hub = new EventHub();
     const staticFiles = buildStaticFiles();
+    store.onStorageChange = (storage) => hub.broadcast({ type: 'storage', storage });
     store.sweep();
     const sweepTimer = setInterval(() => {
         // 清理失败（比如文件正被占用）不能让整个服务崩溃，下一轮会再试
@@ -102,6 +101,7 @@ export function createApp(config, options = {}) {
         bio: user.bio ?? '',
         nameplate: user.nameplate ?? 'default',
         bubble: user.bubble ?? 'default',
+        nudgeSuffix: user.nudgeSuffix ?? '',
     });
     /** 全组消息推给所有人，私聊只推给双方 */
     const sendToAudience = (message, event) => {
@@ -114,13 +114,17 @@ export function createApp(config, options = {}) {
         config,
         store,
         hub,
-        secure: Boolean(options.tls),
+        httpsAvailable: Boolean(options.tls),
         requireUser(req) {
-            const token = readCookie(req, COOKIE_NAME);
+            const token = readCookie(req, sessionCookieName(req));
             const user = token ? store.authenticate(token, clientIp(req)) : undefined;
             if (!user)
                 throw new HttpError(401, '请先登录');
             return user;
+        },
+        requireStorage() {
+            if (store.isStorageFull())
+                throw new HttpError(507, '存储空间已满，暂时不能发送。请先清理一些文件');
         },
         toUserInfo,
         publish(message) {
@@ -198,11 +202,12 @@ export function createApp(config, options = {}) {
     let closeConnections;
     if (options.tls) {
         const secure = createHttpsServer({ key: options.tls.key, cert: options.tls.cert }, handler);
-        const redirect = createHttpServer(redirectToHttps);
+        // http:// 默认也能正常使用（有的同事打不开自签名证书的网站）；关掉后一律跳转到 https://
+        const plain = createHttpServer(config.allowHttp ? handler : redirectToHttps);
         const sockets = new Set();
         /**
          * 同一个端口同时接收 HTTPS 和 HTTP：看连接发来的第一个字节，
-         * TLS 握手总是以 0x16 开头，是的话交给 HTTPS，否则交给跳转处理器。
+         * TLS 握手总是以 0x16 开头，是的话交给 HTTPS，否则交给 HTTP。
          * 读出来的字节要放回去，让后面的处理器能完整读到。
          */
         server = createNetServer((socket) => {
@@ -215,7 +220,7 @@ export function createApp(config, options = {}) {
                 socket.setTimeout(0);
                 socket.pause();
                 socket.unshift(chunk);
-                (chunk[0] === 0x16 ? secure : redirect).emit('connection', socket);
+                (chunk[0] === 0x16 ? secure : plain).emit('connection', socket);
                 process.nextTick(() => socket.resume());
             });
         });

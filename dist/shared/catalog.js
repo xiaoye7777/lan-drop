@@ -1,6 +1,3 @@
-// 内置素材目录：表情、名片背景、气泡样式、消息特效，以及各种长度限制。
-// 前后端都会用到：服务器用 id 列表校验请求，页面用其余字段渲染。
-// 这里只有数据，不含任何图片文件，全部离线可用。
 // ---------- 长度和数量限制 ----------
 export const LIMITS = {
     nameLength: 20,
@@ -18,7 +15,22 @@ export const LIMITS = {
     stickerNameLength: 20,
     maxCustomStickers: 300,
     gomokuSize: 15,
+    remarkLength: 20,
+    nudgeSuffixLength: 12,
+    /** 一条消息最多 @ 几个人 */
+    maxMentions: 50,
+    /** 合并转发最多选几条，一次最多转给几个会话 */
+    forwardMaxItems: 100,
+    forwardMaxTargets: 20,
+    /** 引用和转发的摘要最多保留多少字 */
+    summaryLength: 80,
+    /** 打开页面时每个会话先加载多少条，往上翻时每次再加载多少条 */
+    historyPage: 100,
+    searchMaxResults: 50,
+    searchQueryLength: 50,
 };
+/** @所有人 时，消息的 mentions 里用这个值 */
+export const MENTION_ALL = 'all';
 const meme = (id, emoji, text, tone, motion) => ({
     id: `meme-${id}`,
     art: { kind: 'meme', emoji, text, tone },
@@ -199,3 +211,31 @@ export const EFFECTS = [
 export const NAMEPLATE_IDS = new Set(NAMEPLATES.map((item) => item.id));
 export const BUBBLE_IDS = new Set(BUBBLES.map((item) => item.id));
 export const EFFECT_IDS = new Set(EFFECTS.map((item) => item.id));
+// ---------- 消息摘要 ----------
+/** 截断到指定字数（按字符算，不会把表情符号切成两半） */
+export function truncate(text, length) {
+    const chars = [...text];
+    return chars.length > length ? `${chars.slice(0, length).join('')}…` : text;
+}
+/** 一条消息的简短说明，用于引用回复、合并转发里的互动消息、会话列表和搜索结果 */
+export function summarize(message) {
+    if (message.text !== undefined)
+        return truncate(message.text.replace(/\s+/g, ' ').trim(), LIMITS.summaryLength);
+    if (message.file)
+        return `${message.file.image ? '[图片]' : '[文件]'} ${message.file.name}`;
+    if (message.sticker)
+        return '[表情]';
+    if (message.poll)
+        return `[投票] ${message.poll.question}`;
+    if (message.relay)
+        return `[接龙] ${message.relay.title}`;
+    if (message.wheel)
+        return `[大转盘] ${message.wheel.title}`;
+    if (message.gomoku)
+        return '[五子棋]';
+    if (message.forward)
+        return `[聊天记录] ${message.forward.title}`;
+    if (message.nudge)
+        return `[拍一拍] ${message.nudge.targetName}`;
+    return '';
+}

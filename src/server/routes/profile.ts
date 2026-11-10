@@ -7,7 +7,7 @@ import type { AppContext, Route, RouteParams } from '../context.js';
 import { ID } from '../context.js';
 import { cleanLine, declaredLength, HttpError, imageHeaders, readBody, readJson, sendJson } from '../http.js';
 import { inspectImage } from '../images.js';
-import type { StoredUser } from '../store.js';
+import type { ProfilePatch } from '../store.js';
 import { assertNameAvailable } from './auth.js';
 
 const STICKERS_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
@@ -30,12 +30,15 @@ export function profileRoutes(ctx: AppContext): Route[] {
   async function updateProfile(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const user = ctx.requireUser(req);
     const body = await readJson(req);
-    const patch: Partial<Pick<StoredUser, 'name' | 'bio' | 'nameplate' | 'bubble'>> = {};
+    const patch: ProfilePatch = {};
     if (body.name !== undefined) {
       patch.name = cleanLine(body.name, LIMITS.nameLength, '昵称');
       assertNameAvailable(ctx, patch.name, user.id);
     }
     if (body.bio !== undefined) patch.bio = cleanLine(body.bio, LIMITS.bioLength, '签名', true);
+    if (body.nudgeSuffix !== undefined) {
+      patch.nudgeSuffix = cleanLine(body.nudgeSuffix, LIMITS.nudgeSuffixLength, '拍一拍后缀', true);
+    }
     // 样式只能从内置列表里选，浏览器拿到的永远是已知的 id
     if (body.nameplate !== undefined) {
       if (typeof body.nameplate !== 'string' || !NAMEPLATE_IDS.has(body.nameplate)) {
@@ -52,8 +55,22 @@ export function profileRoutes(ctx: AppContext): Route[] {
     sendJson(res, 200, ctx.toUserInfo(user));
   }
 
+  /** 给同事设置备注，只有自己能看到。备注为空表示清除 */
+  async function setRemark(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const user = ctx.requireUser(req);
+    const body = await readJson(req);
+    const target = typeof body.userId === 'string' ? store.getUser(body.userId) : undefined;
+    if (!target || target.id === user.id) throw new HttpError(400, '找不到这位同事');
+    store.setRemark(user, target.id, cleanLine(body.remark, LIMITS.remarkLength, '备注', true));
+    const remarks = user.remarks ?? {};
+    // 同一个人开着的其他标签页也同步更新
+    ctx.hub.sendTo([user.id], { type: 'remarks', remarks });
+    sendJson(res, 200, { remarks });
+  }
+
   async function uploadAvatar(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const user = ctx.requireUser(req);
+    ctx.requireStorage();
     const { data, info } = await readImage(req, AVATAR_MAX_BYTES);
     store.setAvatar(user, info.type, data);
     ctx.broadcastUsers();
@@ -78,6 +95,7 @@ export function profileRoutes(ctx: AppContext): Route[] {
 
   async function uploadSticker(req: IncomingMessage, res: ServerResponse, { url }: RouteParams): Promise<void> {
     const user = ctx.requireUser(req);
+    ctx.requireStorage();
     const stickers = store.listStickers();
     if (stickers.length >= LIMITS.maxCustomStickers) throw new HttpError(507, '表情库已满，先删掉一些吧');
     const name = cleanLine(url.searchParams.get('name') ?? '', LIMITS.stickerNameLength, '表情名称', true) || '表情';
@@ -110,6 +128,7 @@ export function profileRoutes(ctx: AppContext): Route[] {
 
   return [
     { method: 'POST', path: '/api/me', handler: updateProfile },
+    { method: 'POST', path: '/api/remarks', handler: setRemark },
     { method: 'POST', path: '/api/me/avatar', handler: uploadAvatar },
     { method: 'POST', path: '/api/me/avatar/delete', handler: deleteAvatar },
     { method: 'GET', path: new RegExp(`^/api/avatars/${ID}$`), handler: getAvatar },

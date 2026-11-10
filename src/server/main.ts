@@ -25,7 +25,6 @@ if (nodeMajor < 20) console.warn(`当前 Node.js 是 ${process.version}，建议
 
 const config = loadConfig();
 const hosts = config.host ? [config.host] : lanAddresses();
-const protocol = config.https ? 'https' : 'http';
 
 let tls: ReturnType<typeof loadOrCreateCertificate> | undefined;
 if (config.https) {
@@ -46,20 +45,37 @@ app.server.on('error', (error: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
+function printAddresses(): void {
+  const port = config.port;
+  if (tls) {
+    for (const host of hosts) console.log(`  加密地址（推荐）：https://${host}:${port}`);
+    if (config.allowHttp) {
+      for (const host of hosts) console.log(`  备用地址（加密地址打不开时用）：http://${host}:${port}`);
+    }
+  } else {
+    for (const host of hosts) console.log(`  访问地址：http://${host}:${port}`);
+  }
+  console.log(`  本机访问：${tls ? 'https' : 'http'}://localhost:${port}（在这台电脑上用这个地址打开，可以清理任何人的文件）`);
+}
+
 app.server.listen({ port: config.port, host: config.host }, () => {
   console.log('\nlan-drop 已启动\n');
-  for (const host of hosts) console.log(`  访问地址：${protocol}://${host}:${config.port}`);
-  console.log(`  本机访问：${protocol}://localhost:${config.port}`);
+  printAddresses();
   console.log(`  访问口令：${config.accessCode}`);
   console.log(`  数据目录：${config.dataDir}\n`);
   if (tls) {
-    console.log('已开启 HTTPS，传输内容是加密的。证书是自己签发的，浏览器第一次打开会提示“不安全”，');
-    console.log('选择“高级 → 继续访问”即可。想确认连的是这台服务器，可以在浏览器的证书详情里核对指纹：');
+    console.log('加密地址的证书是自己签发的，浏览器第一次打开会提示“不安全”，选择“高级 → 继续访问”即可。');
+    console.log('想确认连的是这台服务器，可以在浏览器的证书详情里核对指纹：');
     console.log(`  SHA-256 指纹：${tls.fingerprint}`);
     if (tls.created) console.log('  （证书是刚生成的，同事的浏览器会再提示一次“不安全”）');
+    if (config.allowHttp) console.log('有同事打不开加密地址时，让他改用备用地址（http://），内容不加密，但功能一样。');
     console.log('');
   } else {
     console.log('注意：HTTPS 已关闭，聊天内容和文件在网络上是明文传输的。\n');
+  }
+  if (config.freshDataDir) {
+    console.log('这是一个新的数据目录，里面还没有聊天记录。');
+    console.log('如果你是在升级新版本：先按 Ctrl+C 停止，用旧版本文件夹里的 data 文件夹替换上面的数据目录，再重新启动。\n');
   }
   console.log('把访问地址和口令发给同事即可。按 Ctrl+C 停止。\n');
 });

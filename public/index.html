@@ -25,6 +25,7 @@
         </label>
         <p id="login-error" class="form-error" role="alert" hidden></p>
         <button id="login-submit" class="btn btn-primary btn-block" type="submit">进入</button>
+        <p id="login-insecure" class="login-insecure" hidden></p>
       </form>
     </main>
 
@@ -34,6 +35,7 @@
         <header class="sidebar-head">
           <img src="/icon.svg" alt="" width="26" height="26" />
           <strong>内网快传</strong>
+          <button id="insecure-badge" class="insecure-badge" type="button" hidden>未加密</button>
           <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换深浅色" title="切换深浅色">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
               <path fill="currentColor" d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 2v14a7 7 0 0 1 0-14Z" />
@@ -41,15 +43,27 @@
           </button>
         </header>
         <nav id="conversations" class="conversations" aria-label="会话列表"></nav>
+        <button id="storage-meter" class="storage-meter" type="button" title="存储空间：查看和清理文件"></button>
         <button id="profile-button" class="profile-button" type="button" title="个人主页"></button>
       </aside>
 
       <section id="chat" class="chat" aria-labelledby="chat-title">
         <header class="chat-head">
-          <button id="chat-title" class="chat-title" type="button" title="查看资料"></button>
-          <p id="chat-subtitle"></p>
+          <div class="chat-head-text">
+            <button id="chat-title" class="chat-title" type="button" title="查看资料"></button>
+            <p id="chat-subtitle"></p>
+          </div>
+          <button id="search-button" class="icon-btn" type="button" aria-label="搜索聊天记录" title="搜索聊天记录">
+            <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
+              <g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="m15.5 15.5 5 5" />
+              </g>
+            </svg>
+          </button>
         </header>
         <div id="connection-banner" class="banner" role="status" hidden>连接已断开，正在重新连接…</div>
+        <div id="storage-banner" class="banner" role="status" hidden></div>
         <div id="messages" class="messages" role="log" aria-live="polite" tabindex="0"></div>
 
         <!-- 输入栏上方弹出的面板：表情、更多功能、特效 -->
@@ -91,6 +105,7 @@
             </svg>
           </button>
           <div class="composer-input">
+            <div id="reply-chip" class="effect-chip reply-chip" hidden></div>
             <div id="effect-chip" class="effect-chip" hidden></div>
             <textarea id="message-input" rows="1" maxlength="5000" aria-label="输入消息"></textarea>
           </div>
@@ -104,6 +119,15 @@
           </button>
           <button id="send-button" class="btn btn-primary" type="submit">发送</button>
         </form>
+
+        <!-- 多选消息时代替输入栏 -->
+        <div id="select-bar" class="select-bar" hidden>
+          <span id="select-count" class="select-count"></span>
+          <span class="spacer"></span>
+          <button id="forward-merge" class="btn btn-primary" type="button">合并转发</button>
+          <button id="forward-single" class="btn btn-ghost" type="button">逐条转发</button>
+          <button id="select-cancel" class="btn btn-ghost" type="button">取消</button>
+        </div>
 
         <div id="drop-overlay" class="drop-overlay" hidden>
           <div id="drop-text" class="drop-text"></div>

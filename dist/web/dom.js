@@ -100,21 +100,32 @@ export function confirmAction(title, text, okLabel) {
         dialog.addEventListener('close', () => resolve(confirmed));
     });
 }
-/** 弹出一个输入框，确定时返回输入内容，取消时返回 null */
+/**
+ * 弹出一个输入框，确定时返回输入内容，取消时返回 null。
+ * allowEmpty 为 true 时可以提交空内容（比如清除备注），返回空字符串
+ */
 export function promptText(title, options) {
     return new Promise((resolve) => {
         let result = null;
-        const input = h('input', { className: 'input', placeholder: options.placeholder ?? '', value: options.value ?? '', maxLength: options.maxLength, required: true });
+        const input = h('input', {
+            className: 'input',
+            placeholder: options.placeholder ?? '',
+            value: options.value ?? '',
+            maxLength: options.maxLength,
+            required: !options.allowEmpty,
+        });
         const form = h('form', {
             onsubmit: (event) => {
                 event.preventDefault();
-                result = input.value.trim();
-                if (result)
-                    dialog.close();
+                const value = input.value.trim();
+                if (!value && !options.allowEmpty)
+                    return;
+                result = value;
+                dialog.close();
             },
         }, h('h2', {}, title), input, h('div', { className: 'dialog-actions' }, h('span', { className: 'spacer' }), h('button', { className: 'btn btn-ghost', type: 'button', onclick: () => dialog.close() }, '取消'), h('button', { className: 'btn btn-primary', type: 'submit' }, '确定')));
         const dialog = openDialog('dialog-small', form);
-        dialog.addEventListener('close', () => resolve(result || null));
+        dialog.addEventListener('close', () => resolve(result));
         input.select();
     });
 }

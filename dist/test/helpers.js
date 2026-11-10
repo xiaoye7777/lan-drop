@@ -22,12 +22,14 @@ export function testConfig(overrides = {}) {
         host: '127.0.0.1',
         port: 0,
         https: false,
+        allowHttp: true,
+        // 测试的请求都来自 127.0.0.1，默认关掉“本机即管理员”，否则所有人都是管理员
+        localAdmin: false,
         dataDir: overrides.dataDir ?? newDataDir(),
+        freshDataDir: false,
         accessCode: CODE,
         maxFileBytes: 20 * MB,
         maxStorageBytes: 100 * MB,
-        fileTtlMs: 60 * 60 * 1000,
-        messageTtlMs: 7 * 24 * 60 * 60 * 1000,
         sessionTtlMs: 30 * 24 * 60 * 60 * 1000,
         ...overrides,
     };

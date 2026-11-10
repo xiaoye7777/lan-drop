@@ -33,7 +33,7 @@ function rawRequest(secure, options) {
         req.end(options.body);
     });
 }
-test('HTTPS：证书能通过校验，Cookie 带 Secure，误用 http:// 会跳转到 https://', async () => {
+test('HTTPS：证书能通过校验，Cookie 带 Secure；同一端口的 http:// 也能用，两边的登录状态互不通用', async () => {
     const { key, cert } = createCertificate(['127.0.0.1'], ['localhost']);
     const app = createApp(testConfig({ https: true }), { tls: { key, cert } });
     await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
@@ -57,11 +57,43 @@ test('HTTPS：证书能通过校验，Cookie 带 Secure，误用 http:// 会跳�
     const cookie = setCookie.split(';')[0];
     const sessionRes = await rawRequest(true, { port, path: '/api/session', ca: cert, headers: { Cookie: cookie } });
     assert.equal(sessionRes.status, 200);
+    // http:// 能打开页面，但 https 的登录状态在 http 上不算数（Cookie 名字不同，浏览器也不会发 Secure Cookie）
+    const page = await rawRequest(false, { port, path: '/' });
+    assert.equal(page.status, 200);
+    const plainSession = await rawRequest(false, { port, path: '/api/session', headers: { Cookie: cookie } });
+    assert.equal(plainSession.status, 401);
+    // http 上单独登录，Cookie 不带 Secure
+    const plainLogin = await rawRequest(false, {
+        port,
+        method: 'POST',
+        path: '/api/login',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Origin: `http://127.0.0.1:${port}`, Host: `127.0.0.1:${port}` },
+        body,
+    });
+    assert.equal(plainLogin.status, 200);
+    assert.doesNotMatch(String(plainLogin.headers['set-cookie']), /Secure/);
+    // http 页面不能冒充 https 页面发请求：Origin 的协议对不上就拒绝
+    const crossScheme = await rawRequest(true, {
+        port,
+        method: 'POST',
+        path: '/api/logout',
+        ca: cert,
+        headers: { Cookie: cookie, Origin: `http://127.0.0.1:${port}`, Host: `127.0.0.1:${port}`, 'Content-Type': 'application/json', 'Content-Length': 2 },
+        body: '{}',
+    });
+    assert.equal(crossScheme.status, 403);
+    // 不信任这张证书的客户端会拒绝连接，证明连接确实是 TLS 加密的
+    await assert.rejects(rawRequest(true, { port, path: '/' }), /self.signed|unable to verify/i);
+    await app.close();
+});
+test('HTTPS：设置了只允许 HTTPS 时，http:// 会跳转到 https://', async () => {
+    const { key, cert } = createCertificate(['127.0.0.1'], ['localhost']);
+    const app = createApp(testConfig({ https: true, allowHttp: false }), { tls: { key, cert } });
+    await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+    const { port } = app.server.address();
     const redirect = await rawRequest(false, { port, path: '/api/session?x=1', headers: { Host: `127.0.0.1:${port}` } });
     assert.equal(redirect.status, 307);
     assert.equal(redirect.headers.location, `https://127.0.0.1:${port}/api/session?x=1`);
-    // 不信任这张证书的客户端会拒绝连接，证明连接确实是 TLS 加密的
-    await assert.rejects(rawRequest(true, { port, path: '/' }), /self.signed|unable to verify/i);
     await app.close();
 });
 // ---------- 头像和个人资料 ----------

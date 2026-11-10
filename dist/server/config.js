@@ -2,8 +2,7 @@ import { randomInt } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-const HOUR = 60 * 60 * 1000;
-const DAY = 24 * HOUR;
+const DAY = 24 * 60 * 60 * 1000;
 const MB = 1024 * 1024;
 /** 页面会先把头像裁成 256×256 再上传，正常只有几十 KB */
 export const AVATAR_MAX_BYTES = 512 * 1024;
@@ -19,6 +18,10 @@ function positiveNumber(raw, fallback, name) {
         throw new Error(`环境变量 ${name} 必须是正数，当前值：${raw}`);
     }
     return value;
+}
+/** 环境变量是 0、false、off 时为关闭，其他情况（包括没设置）为开启 */
+function enabled(raw) {
+    return !['0', 'false', 'off'].includes((raw ?? '').trim().toLowerCase());
 }
 /** 随机生成访问口令，去掉了 0/O、1/I/L 这些容易看错的字符 */
 function generateAccessCode() {
@@ -45,19 +48,19 @@ function resolveAccessCode(dataDir, fromEnv) {
 }
 export function loadConfig(env = process.env) {
     const dataDir = resolve(env.LAN_DROP_DATA_DIR || join(PROJECT_ROOT, 'data'));
+    const freshDataDir = !existsSync(join(dataDir, 'users.json'));
     mkdirSync(dataDir, { recursive: true });
-    const fileTtlMs = positiveNumber(env.LAN_DROP_FILE_TTL_HOURS, 24, 'LAN_DROP_FILE_TTL_HOURS') * HOUR;
     return {
         host: env.LAN_DROP_HOST || undefined,
         port: positiveNumber(env.LAN_DROP_PORT, 8000, 'LAN_DROP_PORT'),
-        https: !['0', 'false', 'off'].includes((env.LAN_DROP_HTTPS ?? '').toLowerCase()),
+        https: enabled(env.LAN_DROP_HTTPS),
+        allowHttp: enabled(env.LAN_DROP_ALLOW_HTTP),
+        localAdmin: enabled(env.LAN_DROP_LOCAL_ADMIN),
         dataDir,
+        freshDataDir,
         accessCode: resolveAccessCode(dataDir, env.LAN_DROP_CODE),
         maxFileBytes: positiveNumber(env.LAN_DROP_MAX_FILE_MB, 20, 'LAN_DROP_MAX_FILE_MB') * MB,
-        maxStorageBytes: positiveNumber(env.LAN_DROP_MAX_STORAGE_GB, 2, 'LAN_DROP_MAX_STORAGE_GB') * 1024 * MB,
-        fileTtlMs,
-        // 消息至少要活得比文件久，否则文件还没过期，消息先没了
-        messageTtlMs: Math.max(7 * DAY, fileTtlMs),
+        maxStorageBytes: positiveNumber(env.LAN_DROP_MAX_STORAGE_GB, 10, 'LAN_DROP_MAX_STORAGE_GB') * 1024 * MB,
         sessionTtlMs: 30 * DAY,
     };
 }

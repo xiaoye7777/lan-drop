@@ -2,9 +2,13 @@
 import type {
   ChatMessage,
   CustomSticker,
+  MessagePage,
   Recipient,
+  SearchHit,
   SessionInfo,
   StickerRef,
+  StorageInfo,
+  StoredFileInfo,
   UserInfo,
 } from '../shared/types.js';
 
@@ -40,6 +44,8 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
 
 export const fetchSession = () => request<SessionInfo>('/api/session');
 
+export const fetchInfo = () => request<{ https: boolean }>('/api/info');
+
 export const login = (name: string, code: string) => request('/api/login', { name, code });
 
 export const logout = () => request('/api/logout', {});
@@ -49,15 +55,24 @@ export interface ProfilePatch {
   bio?: string;
   nameplate?: string;
   bubble?: string;
+  nudgeSuffix?: string;
 }
 
 export const updateProfile = (patch: ProfilePatch) => request<UserInfo>('/api/me', patch);
 
 export const deleteAvatar = () => request<UserInfo>('/api/me/avatar/delete', {});
 
+/** 文字消息：可以带特效、引用一条消息、@ 几个人 */
+export interface TextInput {
+  text: string;
+  effect?: string;
+  replyTo?: string;
+  mentions?: string[];
+}
+
 /** 各种消息的内容，一次只发一种 */
 export type MessageInput =
-  | { text: string; effect?: string }
+  | TextInput
   | { sticker: StickerRef }
   | { poll: { question: string; options: string[]; multi: boolean } }
   | { relay: { title: string; first?: string } }
@@ -81,6 +96,27 @@ export const act = (messageId: string, action: ActionInput) =>
 
 /** 撤回自己的消息，服务器上永久删除 */
 export const recall = (messageId: string) => request(`/api/messages/${messageId}/recall`, {});
+
+/** 转发：merge 合并成一条聊天记录，single 逐条转发 */
+export const forward = (ids: string[], to: Recipient[], mode: 'merge' | 'single') =>
+  request<{ messages: ChatMessage[] }>('/api/forward', { ids, to, mode });
+
+export const nudge = (to: Recipient, target: string) => request<ChatMessage>('/api/nudge', { to, target });
+
+/** 备注为空表示清除 */
+export const setRemark = (userId: string, remark: string) =>
+  request<{ remarks: Record<string, string> }>('/api/remarks', { userId, remark });
+
+/** 会话里比 before 更早的一页消息 */
+export const fetchHistory = (conversation: Recipient, before: string) =>
+  request<MessagePage>(`/api/messages?${new URLSearchParams({ with: conversation, before })}`);
+
+export const search = (query: string) => request<{ hits: SearchHit[] }>(`/api/search?${new URLSearchParams({ q: query })}`);
+
+export const fetchStorage = () => request<{ storage: StorageInfo; files: StoredFileInfo[] }>('/api/storage');
+
+/** 清理文件：从服务器上删掉，消息保留 */
+export const deleteFile = (id: string) => request(`/api/files/${id}/delete`, {});
 
 export const deleteSticker = (id: string) => request(`/api/stickers/${id}/delete`, {});
 

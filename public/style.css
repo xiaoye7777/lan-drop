@@ -478,12 +478,19 @@ textarea.input {
 
 .chat-head {
   display: flex;
-  flex-direction: column;
   flex: none;
-  justify-content: center;
+  align-items: center;
+  gap: 8px;
   height: 60px;
-  padding: 0 20px;
+  padding: 0 12px 0 20px;
   border-bottom: 1px solid var(--border);
+}
+
+.chat-head-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .chat-title {
@@ -595,34 +602,38 @@ textarea.input {
   font-size: 12px;
 }
 
-/* 撤回按钮：鼠标移到自己的消息上才出现；手机等没有鼠标的设备一直显示 */
+/* 操作按钮（···）：鼠标移到消息上才出现；手机等没有鼠标的设备一直显示 */
 .message-meta {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.recall-btn {
-  padding: 0;
+.msg-menu-btn {
+  padding: 0 4px;
   border: 0;
+  border-radius: 4px;
   background: none;
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;
+  letter-spacing: 1px;
+  line-height: 16px;
   opacity: 0;
 }
 
-.message:hover .recall-btn,
-.recall-btn:focus-visible {
+.message:hover .msg-menu-btn,
+.msg-menu-btn:focus-visible {
   opacity: 1;
 }
 
-.recall-btn:hover {
-  color: var(--danger);
+.msg-menu-btn:hover {
+  background: var(--hover);
+  color: var(--accent-text);
 }
 
 @media (hover: none) {
-  .recall-btn {
+  .msg-menu-btn {
     opacity: 1;
   }
 }
@@ -939,11 +950,6 @@ textarea.input {
 .file-detail-error {
   color: var(--danger);
   overflow-wrap: anywhere;
-}
-
-.file-expired .file-name,
-.file-expired .file-ext {
-  opacity: 0.55;
 }
 
 .file-actions {
@@ -2272,6 +2278,612 @@ textarea.input {
   background-image: repeating-linear-gradient(0deg, transparent 0 27px, #dccfb4 27px 28px);
 }
 
+/* ---------- 文字里的链接和 @ ---------- */
+
+.link {
+  color: var(--accent-text);
+  overflow-wrap: anywhere;
+}
+
+/* 自定义气泡的底色各不相同，链接跟随气泡文字颜色，只加下划线 */
+.bubble:not(.bubble-default) .link,
+.message-mine .bubble-default .link {
+  color: inherit;
+}
+
+.mention {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.bubble:not(.bubble-default) .mention,
+.message-mine .bubble-default .mention {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.mention-me {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: rgb(255 196 0 / 35%);
+}
+
+.mention-tag {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 11px;
+}
+
+.meta-flag {
+  color: #d23c3c;
+}
+
+/* ---------- 引用 ---------- */
+
+.reply-quote {
+  max-width: 100%;
+  margin-bottom: 4px;
+  padding: 4px 10px;
+  overflow: hidden;
+  border: 0;
+  border-left: 3px solid var(--accent-text);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel-raised) 80%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-quote:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.reply-recalled {
+  border-left-color: var(--border);
+  cursor: default;
+  font-style: italic;
+}
+
+.reply-chip {
+  max-width: 100%;
+}
+
+.chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 拍一拍等系统提示 ---------- */
+
+.system-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.nudge-text {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+}
+
+.nudge-shake {
+  animation: nudge-shake 0.7s ease-in-out;
+}
+
+@keyframes nudge-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  15%,
+  45%,
+  75% {
+    transform: translateX(-5px) rotate(-2deg);
+  }
+  30%,
+  60%,
+  90% {
+    transform: translateX(5px) rotate(2deg);
+  }
+}
+
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+.link-btn:hover {
+  color: var(--danger);
+}
+
+/* ---------- 被 @、被跳转到的消息 ---------- */
+
+.message-mentioned .bubble {
+  box-shadow: 0 0 0 2px rgb(255 196 0 / 70%);
+}
+
+.message-flash .message-body {
+  animation: message-flash 1.8s ease-out;
+}
+
+@keyframes message-flash {
+  0%,
+  40% {
+    border-radius: 12px;
+    background: rgb(255 196 0 / 32%);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* ---------- 合并转发的聊天记录 ---------- */
+
+.forward-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.forward-card:hover {
+  border-color: var(--accent-text);
+}
+
+.forward-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.forward-lines {
+  display: flex;
+  flex-direction: column;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.forward-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forward-card .card-foot {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.forward-viewer {
+  width: min(560px, calc(100% - 32px));
+}
+
+.forward-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.forward-meta {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.forward-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.forward-summary {
+  color: var(--muted);
+}
+
+/* ---------- 文件被清理 ---------- */
+
+.file-removed .file-ext {
+  background: var(--hover);
+  color: var(--muted);
+}
+
+.file-removed .file-name {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* ---------- 历史消息 ---------- */
+
+.load-older {
+  display: block;
+  margin: 0 auto 12px;
+  padding: 4px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.load-older:hover:not(:disabled) {
+  color: var(--accent-text);
+}
+
+/* ---------- 多选 ---------- */
+
+.message-selectable {
+  margin-right: -8px;
+  margin-left: -8px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.message-selectable:hover {
+  background: color-mix(in srgb, var(--hover) 70%, transparent);
+}
+
+.message-selected {
+  background: color-mix(in srgb, var(--selected) 80%, transparent);
+}
+
+/* 多选时点整行就是勾选，里面的按钮、链接、图片都不响应 */
+.message-selectable .message-body,
+.message-selectable .message-avatar {
+  pointer-events: none;
+}
+
+.message-mine.message-selectable {
+  flex-direction: row-reverse;
+}
+
+.select-box {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 6px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel-raised);
+}
+
+/* 自己的消息是从右往左排的，勾选框放到最后、再用 margin 推到最左边，和别人的消息对齐 */
+.message-mine .select-box {
+  order: 1;
+  margin-right: auto;
+}
+
+.message-selected .select-box {
+  border-color: var(--accent);
+  background: var(--accent)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='m5 10 3.5 3.5L15 7' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 16px no-repeat;
+}
+
+.messages.selecting .system-line {
+  opacity: 0.5;
+}
+
+.select-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.select-count {
+  color: var(--muted);
+}
+
+/* ---------- 右键菜单和 @ 列表 ---------- */
+
+.context-menu {
+  position: fixed;
+  z-index: 40;
+  bottom: auto;
+  min-width: 120px;
+}
+
+.menu-danger {
+  color: var(--danger);
+}
+
+.mention-menu {
+  left: 120px;
+  max-width: 280px;
+}
+
+.mention-menu .menu-item[aria-selected='true'] {
+  background: var(--selected);
+}
+
+.menu-hint {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- 转发给谁 ---------- */
+
+.forward-dialog .input {
+  margin: 12px 0 8px;
+}
+
+.pick-list {
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.pick-row:hover {
+  background: var(--hover);
+}
+
+.pick-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 存储空间 ---------- */
+
+.storage-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 16px 0;
+  padding: 6px 2px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.storage-meter:hover {
+  color: var(--text);
+}
+
+.usage-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.dialog .usage-bar {
+  height: 8px;
+  margin: 8px 0;
+  border-radius: 4px;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.usage-warn .usage-bar-fill {
+  background: #d98a1c;
+}
+
+.usage-full .usage-bar-fill {
+  background: #d23c3c;
+}
+
+.storage-meter.storage-warn {
+  color: #b5701a;
+}
+
+.storage-meter.storage-full {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.storage-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.storage-banner.storage-warn {
+  background: rgb(217 138 28 / 20%);
+}
+
+.storage-banner.storage-full {
+  background: rgb(210 60 60 / 18%);
+}
+
+.storage-dialog {
+  width: min(600px, calc(100% - 32px));
+}
+
+.storage-list {
+  max-height: min(380px, 50vh);
+  margin-top: 12px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.storage-list .empty-hint {
+  padding: 16px;
+}
+
+.storage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.storage-row:last-child {
+  border-bottom: 0;
+}
+
+.storage-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.storage-size {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.storage-placeholder {
+  flex: none;
+  width: 52px;
+}
+
+/* ---------- 搜索 ---------- */
+
+.search-dialog {
+  width: min(560px, calc(100% - 32px));
+}
+
+.search-results {
+  display: grid;
+  gap: 2px;
+  max-height: min(420px, 55vh);
+  margin-top: 12px;
+  overflow-y: auto;
+}
+
+.search-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.search-hit:hover {
+  background: var(--hover);
+}
+
+.search-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.search-text {
+  overflow-wrap: anywhere;
+}
+
+.search-text mark {
+  border-radius: 3px;
+  background: rgb(255 196 0 / 45%);
+  color: inherit;
+}
+
+/* ---------- 粘贴确认 ---------- */
+
+.paste-dialog {
+  width: min(480px, calc(100% - 32px));
+}
+
+.paste-list {
+  display: grid;
+  gap: 10px;
+  max-height: 55vh;
+  overflow-y: auto;
+}
+
+.paste-image {
+  margin: 0;
+}
+
+.paste-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.paste-image figcaption {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ---------- 未加密连接的提示 ---------- */
+
+.insecure-badge {
+  padding: 1px 8px;
+  border: 1px solid #d98a1c;
+  border-radius: 10px;
+  background: rgb(217 138 28 / 14%);
+  color: #b5701a;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.login-insecure {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.login-insecure a {
+  color: var(--accent-text);
+}
+
+.field > span small {
+  margin-left: 8px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
 /* ---------- 全屏特效 ---------- */
 
 .effects-canvas {
@@ -2312,6 +2924,8 @@ body.screen-shake .workspace {
   .fx-gentle,
   .fx-ink::after,
   .wheel-disc.spinning,
+  .nudge-shake,
+  .message-flash .message-body,
   body.screen-shake .workspace {
     animation: none !important;
   }
@@ -2371,6 +2985,14 @@ body.screen-shake .workspace {
 
   .chat-head {
     display: none;
+  }
+
+  .storage-meter {
+    display: none;
+  }
+
+  .mention-menu {
+    left: 0;
   }
 
   .messages {

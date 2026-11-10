@@ -2,7 +2,7 @@
 import { LIMITS } from '../shared/catalog.js';
 import * as api from './api.js';
 import { h, openDialog, prefersReducedMotion, promptText } from './dom.js';
-import { animationElapsed, applyMessage, GROUP, handleError, state, userById } from './state.js';
+import { animationElapsed, applyMessage, displayName, GROUP, handleError, state } from './state.js';
 export const WHEEL_SPIN_MS = 4200;
 const SIZE = LIMITS.gomokuSize;
 const WHEEL_COLORS = ['#0e6e78', '#e76f51', '#2a9d8f', '#f4a261', '#6a4c93', '#e9c46a', '#3d5a80', '#d62869'];
@@ -14,7 +14,7 @@ async function run(request) {
         handleError(error);
     }
 }
-const nameOf = (id) => userById(id)?.name ?? '已离开的同事';
+const nameOf = (id) => displayName(id);
 function card(kind, label, subtitle, ...children) {
     return h('div', { className: `card activity activity-${kind}` }, h('div', { className: 'card-head' }, h('span', { className: 'card-tag' }, label), h('span', { className: 'card-sub' }, subtitle)), ...children);
 }

@@ -8,10 +8,11 @@ import { createCertificate, loadOrCreateCertificate } from '../server/tls.js';
 import { gifHeader, jpegHeader, newDataDir, pngHeader, webpHeader } from './helpers.js';
 const DAY = 24 * 60 * 60 * 1000;
 // ---------- 证书 ----------
-test('自签名证书：签名有效，包含所有地址，不是 CA，有效期 397 天', () => {
+test('自签名证书：RSA，签名有效，包含所有地址，不是 CA，有效期 397 天', () => {
     const { key, cert } = createCertificate(['127.0.0.1', '192.168.1.10', '::1'], ['localhost']);
     const x509 = new X509Certificate(cert);
     assert.ok(x509.verify(x509.publicKey), '用自己的公钥能验证签名');
+    assert.equal(x509.publicKey.asymmetricKeyType, 'rsa', 'RSA 证书兼容性最好');
     assert.equal(x509.checkIP('192.168.1.10'), '192.168.1.10');
     assert.equal(x509.checkIP('::1'), '::1');
     assert.equal(x509.checkHost('localhost'), 'localhost');

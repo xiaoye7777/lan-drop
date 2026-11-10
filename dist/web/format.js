@@ -25,17 +25,13 @@ export function formatDay(at) {
     if (offset === -1)
         return '昨天';
     const date = new Date(at);
-    return `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+    // 聊天记录永久保存，不是今年的要带上年份
+    const year = date.getFullYear() === new Date().getFullYear() ? '' : `${date.getFullYear()} 年 `;
+    return `${year}${date.getMonth() + 1} 月 ${date.getDate()} 日`;
 }
 export function dayKey(at) {
     const date = new Date(at);
     return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-}
-/** 文件保留期限：用具体时间而不是“还剩 x 小时”，这样不需要定时刷新 */
-export function formatExpiry(at) {
-    const offset = dayOffset(at);
-    const day = offset === 0 ? '今天' : offset === 1 ? '明天' : formatDay(at);
-    return `保留至${day} ${formatTime(at)}`;
 }
 /** 文件卡片上显示的扩展名，没有扩展名时显示“文件” */
 export function fileExtension(name) {
@@ -43,4 +39,8 @@ export function fileExtension(name) {
     if (dot <= 0 || dot === name.length - 1)
         return '文件';
     return name.slice(dot + 1, dot + 5).toUpperCase();
+}
+/** 日期加时间，用在搜索结果和转发的聊天记录里：今天只显示时间，其他显示日期 */
+export function formatDateTime(at) {
+    return dayOffset(at) === 0 ? formatTime(at) : `${formatDay(at)} ${formatTime(at)}`;
 }

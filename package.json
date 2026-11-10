@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
     "start": "node dist/server/main.js",
-    "test": "npm run build && node --test dist/test/server.test.js dist/test/features.test.js dist/test/units.test.js"
+    "test": "npm run build && node --test dist/test/server.test.js dist/test/features.test.js dist/test/units.test.js dist/test/chat.test.js"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

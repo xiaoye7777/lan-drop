@@ -4,7 +4,7 @@ import type { ChatMessage, Recipient } from '../shared/types.js';
 import * as api from './api.js';
 import type { Child } from './dom.js';
 import { h, openDialog, prefersReducedMotion, promptText } from './dom.js';
-import { animationElapsed, applyMessage, GROUP, handleError, state, userById } from './state.js';
+import { animationElapsed, applyMessage, displayName, GROUP, handleError, state } from './state.js';
 
 export const WHEEL_SPIN_MS = 4200;
 const SIZE = LIMITS.gomokuSize;
@@ -18,7 +18,7 @@ async function run(request: Promise<ChatMessage>): Promise<void> {
   }
 }
 
-const nameOf = (id: string) => userById(id)?.name ?? '已离开的同事';
+const nameOf = (id: string) => displayName(id);
 
 function card(kind: string, label: string, subtitle: string, ...children: Child[]): HTMLElement {
   return h(

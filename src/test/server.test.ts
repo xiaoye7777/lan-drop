@@ -187,19 +187,21 @@ test('总容量满了拒绝上传', async () => {
   await app.close();
 });
 
-test('文件到期后不能下载，清理后磁盘文件被删除，消息保留', async () => {
-  const { app, base, dataDir } = await start({ fileTtlMs: 30 });
+test('文件和消息永久保存：定期清理不会删掉它们', async () => {
+  const { app, base, dataDir } = await start();
   const a = await login(base, 'A');
-  const { file } = (await (await upload(base, a, 'all', 'old.txt', 'old')).json()) as ChatMessage;
+  const message = (await (await upload(base, a, 'all', 'old.txt', 'old')).json()) as ChatMessage;
+  const { file } = message;
   const path = join(dataDir, 'files', file?.id ?? '');
-  assert.ok(existsSync(path));
 
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal((await fetch(`${base}/api/files/${file?.id}`, { headers: { Cookie: a } })).status, 410);
-
+  // 把消息改成一年前发的，再清理一次
+  const stored = app.store.findMessage(message.id);
+  assert.ok(stored);
+  stored.at = Date.now() - 365 * 24 * 60 * 60 * 1000;
   app.store.sweep();
-  assert.ok(!existsSync(path));
+  assert.ok(existsSync(path));
   assert.equal((await session(base, a)).messages.length, 1);
+  assert.equal(await (await fetch(`${base}/api/files/${file?.id}`, { headers: { Cookie: a } })).text(), 'old');
   await app.close();
 });
 
