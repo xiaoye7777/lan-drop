@@ -1,108 +1,12 @@
-// 服务端集成测试：真实启动 HTTP 服务器，用真实请求验证行为。
+// 服务端集成测试：基础功能（登录、消息、文件、推送、持久化）和安全边界。
 // 运行：npm test
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, test } from 'node:test';
-import { createApp } from '../server/app.js';
-import type { App } from '../server/app.js';
-import type { Config } from '../server/config.js';
-import type { ChatMessage, SessionInfo } from '../shared/types.js';
-
-const CODE = 'test-access-code';
-const MB = 1024 * 1024;
-const dataDirs: string[] = [];
-
-after(() => {
-  for (const dir of dataDirs) rmSync(dir, { recursive: true, force: true });
-});
-
-function newDataDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'lan-drop-test-'));
-  dataDirs.push(dir);
-  return dir;
-}
-
-interface Running {
-  app: App;
-  base: string;
-  port: number;
-  dataDir: string;
-}
-
-async function start(overrides: Partial<Config> = {}): Promise<Running> {
-  const dataDir = overrides.dataDir ?? newDataDir();
-  const app = createApp({
-    host: '127.0.0.1',
-    port: 0,
-    dataDir,
-    accessCode: CODE,
-    maxFileBytes: 20 * MB,
-    maxStorageBytes: 100 * MB,
-    fileTtlMs: 60 * 60 * 1000,
-    messageTtlMs: 7 * 24 * 60 * 60 * 1000,
-    sessionTtlMs: 30 * 24 * 60 * 60 * 1000,
-    ...overrides,
-  });
-  await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve));
-  const { port } = app.server.address() as AddressInfo;
-  return { app, base: `http://127.0.0.1:${port}`, port, dataDir };
-}
-
-function postJson(base: string, path: string, body: unknown, cookie?: string): Promise<Response> {
-  return fetch(base + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
-    body: JSON.stringify(body),
-  });
-}
-
-async function login(base: string, name: string): Promise<string> {
-  const res = await postJson(base, '/api/login', { name, code: CODE });
-  assert.equal(res.status, 200);
-  return (res.headers.get('set-cookie') ?? '').split(';')[0];
-}
-
-async function session(base: string, cookie: string): Promise<SessionInfo> {
-  const res = await fetch(`${base}/api/session`, { headers: { Cookie: cookie } });
-  assert.equal(res.status, 200);
-  return (await res.json()) as SessionInfo;
-}
-
-async function upload(
-  base: string,
-  cookie: string,
-  to: string,
-  name: string,
-  content: Buffer | string,
-): Promise<Response> {
-  const query = new URLSearchParams({ to, name });
-  return fetch(`${base}/api/files?${query}`, { method: 'POST', headers: { Cookie: cookie }, body: content });
-}
-
-/** 打开事件流，持续收集收到的内容 */
-async function subscribe(base: string, cookie: string) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/api/events`, { headers: { Cookie: cookie }, signal: controller.signal });
-  assert.equal(res.status, 200);
-  let received = '';
-  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
-  void (async () => {
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        received += value;
-      }
-    } catch {
-      // 测试结束主动断开时会走到这里
-    }
-  })();
-  return { read: () => received, close: () => controller.abort() };
-}
+import { test } from 'node:test';
+import type { ChatMessage } from '../shared/types.js';
+import { CODE, MB, login, postJson, session, start, subscribe, upload } from './helpers.js';
 
 test('口令错误不能登录，未登录不能访问接口', async () => {
   const { app, base } = await start();
@@ -398,5 +302,7 @@ test('页面静态文件能访问，并带有安全响应头', async () => {
   assert.match(await page.text(), /内网快传/);
   assert.equal((await fetch(`${base}/style.css`)).status, 200);
   assert.equal((await fetch(`${base}/app.js`)).status, 200);
+  // 前后端共用的素材目录也要能被页面加载到
+  assert.equal((await fetch(`${base}/shared/catalog.js`)).status, 200);
   await app.close();
 });

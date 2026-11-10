@@ -1,0 +1,4 @@
+# dist/ 是编译生成的代码，GitHub 上看改动时默认折叠
+dist/** linguist-generated=true
+# Windows 批处理文件必须是 CRLF 换行，不让 Git 转换
+*.bat -text

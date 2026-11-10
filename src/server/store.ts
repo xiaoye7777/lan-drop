@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import type { ChatMessage, FileMeta, GroupRecipient, Recipient } from '../shared/types.js';
+import type { ChatMessage, CustomSticker, GroupRecipient, ImageType, Recipient } from '../shared/types.js';
 import type { Config } from './config.js';
 
 export const GROUP_RECIPIENT: GroupRecipient = 'all';
@@ -25,6 +25,10 @@ export interface StoredUser {
   name: string;
   ip: string;
   lastSeenAt: number;
+  avatar?: { type: ImageType; version: number };
+  bio?: string;
+  nameplate?: string;
+  bubble?: string;
 }
 
 interface StoredSession {
@@ -32,12 +36,18 @@ interface StoredSession {
   expiresAt: number;
 }
 
+/** 消息里除了基本信息之外的内容部分 */
+export type MessageContent = Pick<
+  ChatMessage,
+  'text' | 'effect' | 'file' | 'sticker' | 'poll' | 'relay' | 'wheel' | 'gomoku'
+>;
+
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-/** 先写临时文件再重命名，进程中途崩溃也不会留下写了一半的 JSON */
-function writeFileAtomic(path: string, content: string): void {
+/** 先写临时文件再重命名，进程中途崩溃也不会留下写了一半的文件 */
+function writeFileAtomic(path: string, content: string | Buffer): void {
   const temp = `${path}.tmp`;
   writeFileSync(temp, content, { mode: 0o600 });
   renameSync(temp, path);
@@ -45,30 +55,40 @@ function writeFileAtomic(path: string, content: string): void {
 
 /**
  * 服务器的全部持久化数据，都存在 dataDir 目录下：
- * - users.json     同事和登录会话。会话只存令牌的哈希值，文件泄露也拿不到可用的令牌
- * - messages.jsonl 消息记录，一行一条，新消息直接追加
+ * - users.json     同事、个人资料和登录会话。会话只存令牌的哈希值，文件泄露也拿不到可用的令牌
+ * - messages.jsonl 消息记录，一行一条。新消息直接追加；投票等消息状态变化时整个重写
  * - files/         上传的文件，文件名是随机 id，原文件名存在消息里
+ * - avatars/       头像，文件名是用户 id
+ * - stickers.json  全组共享的自定义表情列表，图片在 stickers/ 目录
  *
  * 使用人数很少，所以直接用同步读写，换取代码简单。
  */
 export class Store {
   readonly filesDir: string;
+  private readonly avatarsDir: string;
+  private readonly stickersDir: string;
   private readonly usersPath: string;
   private readonly messagesPath: string;
+  private readonly stickersPath: string;
 
   private readonly users = new Map<string, StoredUser>();
   private readonly sessions = new Map<string, StoredSession>();
   private messages: ChatMessage[] = [];
+  private readonly messageIndex = new Map<string, ChatMessage>();
   /** 文件 id -> 所属消息，用于下载时的查找和权限判断 */
   private readonly fileIndex = new Map<string, ChatMessage>();
+  private stickers: CustomSticker[] = [];
   /** 正在上传的文件预占的容量，防止并发上传时超过总容量上限 */
   private reservedBytes = 0;
 
   constructor(private readonly config: Config) {
     this.filesDir = join(config.dataDir, 'files');
+    this.avatarsDir = join(config.dataDir, 'avatars');
+    this.stickersDir = join(config.dataDir, 'stickers');
     this.usersPath = join(config.dataDir, 'users.json');
     this.messagesPath = join(config.dataDir, 'messages.jsonl');
-    mkdirSync(this.filesDir, { recursive: true });
+    this.stickersPath = join(config.dataDir, 'stickers.json');
+    for (const dir of [this.filesDir, this.avatarsDir, this.stickersDir]) mkdirSync(dir, { recursive: true });
     this.load();
   }
 
@@ -91,10 +111,14 @@ export class Store {
         }
       }
     }
+    if (existsSync(this.stickersPath)) {
+      this.stickers = JSON.parse(readFileSync(this.stickersPath, 'utf8')) as CustomSticker[];
+    }
   }
 
   private indexMessage(message: ChatMessage): void {
     this.messages.push(message);
+    this.messageIndex.set(message.id, message);
     if (message.file) this.fileIndex.set(message.file.id, message);
   }
 
@@ -103,6 +127,14 @@ export class Store {
       this.usersPath,
       JSON.stringify({ users: [...this.users.values()], sessions: Object.fromEntries(this.sessions) }),
     );
+  }
+
+  private saveMessages(): void {
+    writeFileAtomic(this.messagesPath, this.messages.map((message) => `${JSON.stringify(message)}\n`).join(''));
+  }
+
+  private saveStickers(): void {
+    writeFileAtomic(this.stickersPath, JSON.stringify(this.stickers));
   }
 
   // ---------- 同事和会话 ----------
@@ -127,8 +159,9 @@ export class Store {
     return user;
   }
 
-  renameUser(user: StoredUser, name: string): void {
-    user.name = name;
+  /** 修改个人资料。只改传入的字段，调用前已经校验过取值 */
+  updateProfile(user: StoredUser, patch: Partial<Pick<StoredUser, 'name' | 'bio' | 'nameplate' | 'bubble'>>): void {
+    Object.assign(user, patch);
     this.saveUsers();
   }
 
@@ -158,6 +191,24 @@ export class Store {
     return user;
   }
 
+  // ---------- 头像 ----------
+
+  avatarPath(userId: string): string {
+    return join(this.avatarsDir, userId);
+  }
+
+  setAvatar(user: StoredUser, type: ImageType, data: Buffer): void {
+    writeFileAtomic(this.avatarPath(user.id), data);
+    user.avatar = { type, version: (user.avatar?.version ?? 0) + 1 };
+    this.saveUsers();
+  }
+
+  removeAvatar(user: StoredUser): void {
+    rmSync(this.avatarPath(user.id), { force: true });
+    delete user.avatar;
+    this.saveUsers();
+  }
+
   // ---------- 消息 ----------
 
   /** 判断某个用户能否看到这条消息：全组消息所有人可见，私聊只有双方可见 */
@@ -169,11 +220,15 @@ export class Store {
     return this.messages.filter((message) => this.canView(message, userId));
   }
 
+  findMessage(id: string): ChatMessage | undefined {
+    return this.messageIndex.get(id);
+  }
+
   isValidRecipient(to: Recipient): boolean {
     return to === GROUP_RECIPIENT || this.users.has(to);
   }
 
-  addMessage(from: StoredUser, to: Recipient, content: { text: string } | { file: FileMeta }): ChatMessage {
+  addMessage(from: StoredUser, to: Recipient, content: MessageContent): ChatMessage {
     const message: ChatMessage = {
       id: randomUUID(),
       from: from.id,
@@ -185,6 +240,29 @@ export class Store {
     this.indexMessage(message);
     appendFileSync(this.messagesPath, `${JSON.stringify(message)}\n`, { mode: 0o600 });
     return message;
+  }
+
+  /**
+   * 永久删除一条消息（撤回）：从内存和 messages.jsonl 里去掉，带文件的连文件一起删。
+   * 不留任何记录，重启后也找不回来。
+   */
+  deleteMessage(message: ChatMessage): void {
+    this.messages = this.messages.filter((item) => item !== message);
+    this.messageIndex.delete(message.id);
+    if (message.file) {
+      this.fileIndex.delete(message.file.id);
+      try {
+        rmSync(this.filePath(message.file.id), { force: true });
+      } catch {
+        // 文件正被别人下载时（Windows 上）可能删不掉；它已经不属于任何消息，定期清理时会删掉
+      }
+    }
+    this.saveMessages();
+  }
+
+  /** 消息内容（投票结果、棋局等）已经在内存里改好了，这里负责落盘 */
+  saveMessageChange(): void {
+    this.saveMessages();
   }
 
   // ---------- 文件 ----------
@@ -217,6 +295,34 @@ export class Store {
     this.reservedBytes -= bytes;
   }
 
+  // ---------- 自定义表情 ----------
+
+  listStickers(): CustomSticker[] {
+    return this.stickers;
+  }
+
+  findSticker(id: string): CustomSticker | undefined {
+    return this.stickers.find((sticker) => sticker.id === id);
+  }
+
+  stickerPath(id: string): string {
+    return join(this.stickersDir, id);
+  }
+
+  addSticker(owner: StoredUser, name: string, type: ImageType, data: Buffer): CustomSticker {
+    const sticker: CustomSticker = { id: randomUUID(), name, owner: owner.id, type, size: data.length };
+    writeFileAtomic(this.stickerPath(sticker.id), data);
+    this.stickers = [...this.stickers, sticker];
+    this.saveStickers();
+    return sticker;
+  }
+
+  removeSticker(id: string): void {
+    this.stickers = this.stickers.filter((sticker) => sticker.id !== id);
+    this.saveStickers();
+    rmSync(this.stickerPath(id), { force: true });
+  }
+
   // ---------- 定期清理 ----------
 
   /** 清理过期的文件、消息、会话，以及长期不活跃的同事和残留文件 */
@@ -232,11 +338,11 @@ export class Store {
     // 消息：只有确实删掉了内容才重写文件
     const kept = this.messages.filter((message) => message.at + this.config.messageTtlMs > now);
     if (kept.length !== this.messages.length) {
+      for (const message of this.messages) {
+        if (!kept.includes(message)) this.messageIndex.delete(message.id);
+      }
       this.messages = kept;
-      writeFileAtomic(
-        this.messagesPath,
-        kept.map((message) => `${JSON.stringify(message)}\n`).join(''),
-      );
+      this.saveMessages();
     }
 
     // 会话和不活跃的同事
@@ -249,7 +355,7 @@ export class Store {
     // 每次都保存：最近活跃时间平时只更新内存，要定期落盘，否则重启后活跃的同事可能被误清理
     this.saveUsers();
 
-    // 磁盘上没有消息引用的文件：崩溃残留的临时文件，或写入消息前进程退出留下的文件
+    // 磁盘上没有被引用的文件：崩溃残留的临时文件，或写入记录前进程退出留下的文件
     for (const name of readdirSync(this.filesDir)) {
       const path = join(this.filesDir, name);
       if (name.startsWith(TEMP_PREFIX)) {
@@ -257,6 +363,12 @@ export class Store {
       } else if (!this.fileIndex.has(name)) {
         rmSync(path, { force: true });
       }
+    }
+    for (const name of readdirSync(this.avatarsDir)) {
+      if (!this.users.get(name)?.avatar) rmSync(join(this.avatarsDir, name), { force: true });
+    }
+    for (const name of readdirSync(this.stickersDir)) {
+      if (!this.findSticker(name)) rmSync(join(this.stickersDir, name), { force: true });
     }
   }
 }

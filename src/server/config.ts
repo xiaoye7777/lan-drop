@@ -7,10 +7,17 @@ const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 const MB = 1024 * 1024;
 
+/** 页面会先把头像裁成 256×256 再上传，正常只有几十 KB */
+export const AVATAR_MAX_BYTES = 512 * 1024;
+/** 动图表情一般不大，2 MB 足够 */
+export const STICKER_MAX_BYTES = 2 * MB;
+
 export interface Config {
   /** 不设置时同时监听 IPv4 和 IPv6 */
   host?: string;
   port: number;
+  /** 默认开启。关闭后用 HTTP 明文传输，局域网里的人可以看到聊天内容 */
+  https: boolean;
   dataDir: string;
   accessCode: string;
   maxFileBytes: number;
@@ -64,6 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     host: env.LAN_DROP_HOST || undefined,
     port: positiveNumber(env.LAN_DROP_PORT, 8000, 'LAN_DROP_PORT'),
+    https: !['0', 'false', 'off'].includes((env.LAN_DROP_HTTPS ?? '').toLowerCase()),
     dataDir,
     accessCode: resolveAccessCode(dataDir, env.LAN_DROP_CODE),
     maxFileBytes: positiveNumber(env.LAN_DROP_MAX_FILE_MB, 20, 'LAN_DROP_MAX_FILE_MB') * MB,

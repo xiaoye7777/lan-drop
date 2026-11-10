@@ -1,9 +1,40 @@
 // 页面主逻辑。结构是“状态 + 渲染函数”：状态变了就调用对应的 render 函数重画那一块。
-import type { ChatMessage, GroupRecipient, Recipient, ServerEvent, SessionInfo, UserInfo } from '../shared/types.js';
+// 表情、特效、投票等功能在各自的模块里，这里负责把它们组装起来。
+import type { ChatMessage, FileMeta, Recipient, ServerEvent, SessionInfo, StickerRef, UserInfo } from '../shared/types.js';
+import { EFFECTS } from '../shared/catalog.js';
+import {
+  openPollDialog,
+  openRelayDialog,
+  openWheelDialog,
+  renderGomoku,
+  renderPoll,
+  renderRelay,
+  renderWheel,
+  startGomoku,
+} from './activities.js';
 import * as api from './api.js';
+import { applyChatBackground } from './chat-background.js';
+import { bubbleClass, nameplateClass, renderAvatar } from './components.js';
+import { byId, confirmAction, h, messageOf, readStorage, showToast, writeStorage } from './dom.js';
+import { BUBBLE_EFFECT_MS, effectInfo, playScreenEffect } from './effects.js';
 import { dayKey, fileExtension, formatDay, formatExpiry, formatSize, formatTime } from './format.js';
+import { openImagePreview } from './preview.js';
+import { openMyProfile, openUserCard } from './profile.js';
+import {
+  animationElapsed,
+  applyMessage,
+  conversationMessages,
+  conversationName,
+  conversationOf,
+  GROUP,
+  handleError,
+  onRender,
+  onUnauthorized,
+  state,
+  userById,
+} from './state.js';
+import { createStickerPanel, renderSticker, STICKER_PLAY_MS } from './stickers.js';
 
-const GROUP: GroupRecipient = 'all';
 const APP_TITLE = '内网快传';
 const READ_MARKS_KEY = 'lan-drop-read-marks';
 const THEME_KEY = 'lan-drop-theme';
@@ -11,10 +42,6 @@ const THEME_KEY = 'lan-drop-theme';
 const STICK_TO_BOTTOM_PX = 80;
 
 // ---------- 页面元素 ----------
-
-function byId<T extends HTMLElement>(id: string): T {
-  return document.getElementById(id) as T;
-}
 
 const loginView = byId('login-view');
 const loginForm = byId<HTMLFormElement>('login-form');
@@ -25,7 +52,7 @@ const loginSubmit = byId<HTMLButtonElement>('login-submit');
 const workspaceView = byId('workspace-view');
 const conversationsEl = byId('conversations');
 const profileButton = byId<HTMLButtonElement>('profile-button');
-const chatTitle = byId('chat-title');
+const chatTitle = byId<HTMLButtonElement>('chat-title');
 const chatSubtitle = byId('chat-subtitle');
 const banner = byId('connection-banner');
 const messagesEl = byId('messages');
@@ -33,15 +60,16 @@ const composer = byId<HTMLFormElement>('composer');
 const fileInput = byId<HTMLInputElement>('file-input');
 const messageInput = byId<HTMLTextAreaElement>('message-input');
 const sendButton = byId<HTMLButtonElement>('send-button');
+const stickerButton = byId<HTMLButtonElement>('sticker-button');
+const moreButton = byId<HTMLButtonElement>('more-button');
+const moreMenu = byId('more-menu');
+const effectButton = byId<HTMLButtonElement>('effect-button');
+const effectMenu = byId('effect-menu');
+const effectChip = byId('effect-chip');
 const dropOverlay = byId('drop-overlay');
 const dropText = byId('drop-text');
-const profileDialog = byId<HTMLDialogElement>('profile-dialog');
-const profileForm = byId<HTMLFormElement>('profile-form');
-const profileName = byId<HTMLInputElement>('profile-name');
-const profileError = byId('profile-error');
-const toastEl = byId('toast');
 
-// ---------- 状态 ----------
+// ---------- 上传队列 ----------
 
 /** 一个待发送或发送中的文件。发送成功后会被移除，由正式的文件消息取代 */
 interface Upload {
@@ -53,103 +81,18 @@ interface Upload {
   error?: string;
   /** 文件超过大小限制时重试也没用，不显示重试按钮 */
   retryable: boolean;
-  handle?: api.UploadHandle;
+  handle?: api.UploadHandle<ChatMessage>;
 }
 
-let me: UserInfo | null = null;
-let users: UserInfo[] = [];
-let maxFileBytes = 0;
-let activeConversation: Recipient = GROUP;
 let uploads: Upload[] = [];
 let events: EventSource | null = null;
 let isSending = false;
-const messages = new Map<string, ChatMessage>();
+/** 选好、还没发出去的消息特效 */
+let pendingEffect: string | null = null;
+/** 上次画消息列表时同事们的头像、昵称、气泡，变了才需要重画消息 */
+let lastUserLook = '';
 
-// ---------- 浏览器本地存储（失败也不影响使用） ----------
-
-function readStorage(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeStorage(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // 隐私模式等情况下可能写不进去，忽略
-  }
-}
-
-// ---------- 小工具 ----------
-
-type Child = Node | string | null | undefined | false;
-
-/** 创建 DOM 元素。内容都通过 textContent 写入，消息里的 HTML 不会被执行 */
-function h<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  props: Record<string, unknown> = {},
-  ...children: Child[]
-): HTMLElementTagNameMap[K] {
-  const el = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (key.startsWith('aria-') || key.startsWith('data-')) el.setAttribute(key, String(value));
-    else (el as unknown as Record<string, unknown>)[key] = value;
-  }
-  for (const child of children) {
-    if (child !== null && child !== undefined && child !== false) el.append(child);
-  }
-  return el;
-}
-
-let toastTimer: number | undefined;
-
-function showToast(text: string): void {
-  toastEl.textContent = text;
-  toastEl.hidden = false;
-  window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => {
-    toastEl.hidden = true;
-  }, 4000);
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : '操作失败，请重试';
-}
-
-/** 登录状态失效时回到登录页。返回 true 表示已处理 */
-function handleUnauthorized(error: unknown): boolean {
-  if (error instanceof api.ApiError && error.status === 401) {
-    showLogin();
-    return true;
-  }
-  return false;
-}
-
-// ---------- 会话和未读 ----------
-
-/** 一条消息属于哪个会话：全组，或私聊的对方 */
-function conversationOf(message: ChatMessage): Recipient {
-  if (message.to === GROUP) return GROUP;
-  return message.from === me?.id ? message.to : message.from;
-}
-
-function conversationMessages(conversation: Recipient): ChatMessage[] {
-  return [...messages.values()]
-    .filter((message) => conversationOf(message) === conversation)
-    .sort((a, b) => a.at - b.at);
-}
-
-function userById(id: string): UserInfo | undefined {
-  return users.find((user) => user.id === id);
-}
-
-function conversationName(conversation: Recipient): string {
-  if (conversation === GROUP) return '全组';
-  return userById(conversation)?.name ?? '已离开的同事';
-}
+// ---------- 未读 ----------
 
 /**
  * 已读位置按会话记录在浏览器里，存的是服务器时间，这样不受同事电脑时钟不准的影响。
@@ -173,7 +116,7 @@ function loadReadMarks(): ReadMarks {
 let readMarks = loadReadMarks();
 
 function isUnread(message: ChatMessage): boolean {
-  if (message.from === me?.id) return false;
+  if (message.from === state.me?.id) return false;
   const mark = readMarks.conversations[conversationOf(message)] ?? readMarks.firstSeen ?? 0;
   return message.at > mark;
 }
@@ -185,18 +128,18 @@ function unreadCount(conversation: Recipient): number {
 /** 当前会话正在被看时，把它标记为已读 */
 function markActiveAsRead(): void {
   if (document.visibilityState !== 'visible') return;
-  const latest = conversationMessages(activeConversation).at(-1);
-  if (latest && latest.at > (readMarks.conversations[activeConversation] ?? 0)) {
-    readMarks.conversations[activeConversation] = latest.at;
+  const latest = conversationMessages(state.active).at(-1);
+  if (latest && latest.at > (readMarks.conversations[state.active] ?? 0)) {
+    readMarks.conversations[state.active] = latest.at;
     writeStorage(READ_MARKS_KEY, JSON.stringify(readMarks));
   }
 }
 
-// 页面在后台且有未读时让标题闪烁。HTTP 页面用不了系统通知，这是最醒目的提醒方式
+// 页面在后台且有未读时让标题闪烁
 let titleFlashOn = false;
 
 function updateTitle(): void {
-  const total = [...messages.values()].filter(isUnread).length;
+  const total = [...state.messages.values()].filter(isUnread).length;
   if (total === 0) {
     document.title = APP_TITLE;
     return;
@@ -212,23 +155,14 @@ window.setInterval(() => {
 
 // ---------- 渲染：侧边栏 ----------
 
-function renderAvatar(name: string, online: boolean): HTMLElement {
-  return h(
-    'span',
-    { className: online ? 'avatar' : 'avatar avatar-offline', 'aria-hidden': 'true' },
-    [...name][0] ?? '?',
-    online && h('span', { className: 'status-dot' }),
-  );
-}
-
-function renderConversationButton(id: Recipient, name: string, meta: string, avatar: HTMLElement): HTMLElement {
-  const unread = id === activeConversation ? 0 : unreadCount(id);
+function renderConversationButton(id: Recipient, name: string, meta: string, avatar: HTMLElement, nameplate?: string): HTMLElement {
+  const unread = id === state.active ? 0 : unreadCount(id);
   return h(
     'button',
     {
-      className: 'conversation',
+      className: `conversation ${nameplateClass(nameplate)}`,
       type: 'button',
-      'aria-current': String(id === activeConversation),
+      'aria-current': String(id === state.active),
       onclick: () => selectConversation(id),
     },
     avatar,
@@ -243,34 +177,38 @@ function renderConversationButton(id: Recipient, name: string, meta: string, ava
 }
 
 function renderSidebar(): void {
-  const others = users
-    .filter((user) => user.id !== me?.id)
+  const others = state.users
+    .filter((user) => user.id !== state.me?.id)
     .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, 'zh'));
-  const onlineCount = users.filter((user) => user.online).length;
+  const onlineCount = state.users.filter((user) => user.online).length;
+  const groupAvatar = h('span', { className: 'avatar avatar-md avatar-group', 'aria-hidden': 'true' }, '全');
 
   const nodes: Node[] = [
-    renderConversationButton(GROUP, '全组', `${onlineCount} 人在线`, renderAvatar('全', true)),
+    renderConversationButton(GROUP, '全组', `${onlineCount} 人在线`, groupAvatar),
     h('div', { className: 'section-label' }, '同事'),
     ...others.map((user) =>
       renderConversationButton(
         user.id,
         user.name,
-        `${user.online ? '在线' : '离线'} · ${user.ip}`,
-        renderAvatar(user.name, user.online),
+        user.bio || `${user.online ? '在线' : '离线'} · ${user.ip}`,
+        renderAvatar(user, 'md', user.online),
+        user.nameplate,
       ),
     ),
   ];
   if (others.length === 0) nodes.push(h('div', { className: 'empty-hint' }, '同事登录后会显示在这里'));
   conversationsEl.replaceChildren(...nodes);
 
+  const me = state.me;
   if (me) {
+    profileButton.className = `profile-button ${nameplateClass(me.nameplate)}`;
     profileButton.replaceChildren(
-      renderAvatar(me.name, true),
+      renderAvatar(me, 'md', true),
       h(
         'span',
         { className: 'conversation-text' },
         h('span', { className: 'conversation-name' }, me.name),
-        h('span', { className: 'conversation-meta' }, '修改昵称 / 退出'),
+        h('span', { className: 'conversation-meta' }, '个人主页'),
       ),
     );
   }
@@ -279,57 +217,164 @@ function renderSidebar(): void {
 // ---------- 渲染：聊天区 ----------
 
 function renderChatHead(): void {
-  const user = userById(activeConversation);
-  chatTitle.textContent = conversationName(activeConversation);
-  if (activeConversation === GROUP) {
-    chatSubtitle.textContent = `共 ${users.length} 人，${users.filter((item) => item.online).length} 人在线`;
+  const user = userById(state.active);
+  chatTitle.textContent = conversationName(state.active);
+  chatTitle.disabled = !user;
+  if (state.active === GROUP) {
+    chatSubtitle.textContent = `共 ${state.users.length} 人，${state.users.filter((item) => item.online).length} 人在线`;
   } else if (user) {
-    chatSubtitle.textContent = user.online ? `在线 · ${user.ip}` : `离线 · ${user.ip} · 对方上线后可以收到消息和文件`;
+    const status = user.online ? '在线' : '离线，上线后能收到';
+    chatSubtitle.textContent = [status, user.ip, user.bio].filter(Boolean).join(' · ');
   } else {
     chatSubtitle.textContent = '';
   }
-  messageInput.placeholder = `发消息给${conversationName(activeConversation)}（Enter 发送）`;
+  messageInput.placeholder = `发消息给${conversationName(state.active)}（Enter 发送）`;
 }
 
 function renderFileCard(message: ChatMessage): HTMLElement {
-  const file = message.file!;
+  const file = message.file as FileMeta;
   const expired = file.expiresAt <= Date.now();
+  const preview =
+    file.image && !expired
+      ? h(
+          'button',
+          { className: 'file-thumb', type: 'button', 'aria-label': `查看大图 ${file.name}`, onclick: () => openImagePreview(file) },
+          h('img', { src: `/api/files/${file.id}/preview`, alt: '', loading: 'lazy', decoding: 'async' }),
+        )
+      : null;
   return h(
     'div',
-    { className: expired ? 'file-card file-expired' : 'file-card' },
-    h('div', { className: 'file-ext', 'aria-hidden': 'true' }, fileExtension(file.name)),
+    { className: `file-card${expired ? ' file-expired' : ''}${preview ? ' has-thumb' : ''}` },
+    preview,
     h(
       'div',
-      { className: 'file-info' },
-      h('div', { className: 'file-name', title: file.name }, file.name),
+      { className: 'file-row' },
+      h('div', { className: 'file-ext', 'aria-hidden': 'true' }, fileExtension(file.name)),
       h(
         'div',
-        { className: 'file-detail' },
-        `${formatSize(file.size)} · ${expired ? '已过期' : formatExpiry(file.expiresAt)}`,
+        { className: 'file-info' },
+        h('div', { className: 'file-name', title: file.name }, file.name),
+        h('div', { className: 'file-detail' }, `${formatSize(file.size)} · ${expired ? '已过期' : formatExpiry(file.expiresAt)}`),
       ),
+      !expired &&
+        h('a', { className: 'btn btn-ghost btn-small', href: `/api/files/${file.id}`, download: file.name, 'aria-label': `下载 ${file.name}` }, '下载'),
     ),
-    !expired &&
-      h(
-        'a',
-        {
-          className: 'btn btn-ghost btn-small',
-          href: `/api/files/${file.id}`,
-          download: file.name,
-          'aria-label': `下载 ${file.name}`,
-        },
-        '下载',
-      ),
   );
 }
 
+/** 文字气泡：样式用发送者选的气泡，再叠加消息特效 */
+function renderTextBubble(message: ChatMessage, sender: UserInfo | undefined): HTMLElement {
+  const bubble = h('div', { className: bubbleClass(sender?.bubble) }, h('span', { className: 'bubble-text' }, message.text ?? ''));
+  const effect = effectInfo(message.effect);
+  if (effect?.id === 'ink' && !state.revealedInk.has(message.id)) {
+    // 隐形墨水：内容被遮住，点一下才显示
+    const reveal = () => {
+      state.revealedInk.add(message.id);
+      bubble.classList.remove('fx-ink');
+      bubble.removeAttribute('role');
+      bubble.removeAttribute('tabindex');
+      bubble.removeAttribute('aria-label');
+    };
+    bubble.classList.add('fx-ink');
+    bubble.setAttribute('role', 'button');
+    bubble.setAttribute('tabindex', '0');
+    bubble.setAttribute('aria-label', '隐形墨水消息，点击显示');
+    bubble.addEventListener('click', reveal);
+    bubble.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        reveal();
+      }
+    });
+  } else if (effect?.kind === 'bubble' && BUBBLE_EFFECT_MS[effect.id]) {
+    const elapsed = animationElapsed(message.id, BUBBLE_EFFECT_MS[effect.id]);
+    if (elapsed !== null) {
+      // 负的延迟：重画时从已经播放到的位置接着播
+      bubble.classList.add(`fx-${effect.id}`);
+      bubble.style.animationDelay = `-${elapsed}ms`;
+    }
+  }
+  return bubble;
+}
+
+function replayEffect(message: ChatMessage): void {
+  state.revealedInk.delete(message.id);
+  state.animations.set(message.id, performance.now());
+  if (message.effect) playScreenEffect(message.effect);
+  renderMessages();
+}
+
+function renderContent(message: ChatMessage, sender: UserInfo | undefined): HTMLElement {
+  if (message.file) return renderFileCard(message);
+  if (message.sticker) return renderSticker(message.sticker, animationElapsed(message.id, STICKER_PLAY_MS) !== null);
+  if (message.poll) return renderPoll(message);
+  if (message.relay) return renderRelay(message);
+  if (message.wheel) return renderWheel(message);
+  if (message.gomoku) return renderGomoku(message);
+  return renderTextBubble(message, sender);
+}
+
+/** 撤回自己的消息：确认后服务器永久删除，所有人那边同时消失 */
+async function recallMessage(message: ChatMessage): Promise<void> {
+  const ok = await confirmAction(
+    '撤回这条消息？',
+    message.file
+      ? '撤回后所有人都看不到，服务器上的文件也会一起删除，无法恢复。已经下载过的人手里的文件删不掉。'
+      : '撤回后所有人都看不到，服务器上会永久删除，无法恢复。',
+    '撤回',
+  );
+  if (!ok) return;
+  try {
+    await api.recall(message.id);
+    removeMessage(message.id);
+  } catch (error) {
+    handleError(error);
+  }
+}
+
+function removeMessage(id: string): void {
+  state.messages.delete(id);
+  state.animations.delete(id);
+  state.revealedInk.delete(id);
+  renderAll();
+}
+
 function renderMessage(message: ChatMessage): HTMLElement {
-  const mine = message.from === me?.id;
-  const meta = mine ? formatTime(message.at) : `${message.fromName} · ${formatTime(message.at)}`;
+  const mine = message.from === state.me?.id;
+  const sender = userById(message.from);
+  const effect = effectInfo(message.effect);
+  const author = sender ?? { id: message.from, name: message.fromName, avatar: null };
   return h(
     'div',
     { className: mine ? 'message message-mine' : 'message' },
-    h('div', { className: 'message-meta' }, meta),
-    message.file ? renderFileCard(message) : h('div', { className: 'bubble' }, message.text ?? ''),
+    h(
+      'button',
+      {
+        className: 'message-avatar',
+        type: 'button',
+        'aria-label': `查看 ${author.name} 的资料`,
+        disabled: !sender,
+        onclick: () => openUserCard(message.from, selectConversation),
+      },
+      renderAvatar(author, 'sm'),
+    ),
+    h(
+      'div',
+      { className: 'message-body' },
+      h(
+        'div',
+        { className: 'message-meta' },
+        mine ? formatTime(message.at) : `${message.fromName} · ${formatTime(message.at)}`,
+        mine && h('button', { className: 'recall-btn', type: 'button', onclick: () => void recallMessage(message) }, '撤回'),
+      ),
+      renderContent(message, sender),
+      effect &&
+        h(
+          'button',
+          { className: 'effect-tag', type: 'button', title: '重播特效', onclick: () => replayEffect(message) },
+          `✨ ${effect.name} · 重播`,
+        ),
+    ),
   );
 }
 
@@ -345,25 +390,29 @@ function renderUpload(upload: Upload): HTMLElement {
     { className: 'message message-mine', 'data-upload': upload.id },
     h(
       'div',
-      { className: 'file-card' },
-      h('div', { className: 'file-ext', 'aria-hidden': 'true' }, fileExtension(upload.file.name)),
+      { className: 'message-body' },
       h(
         'div',
-        { className: 'file-info' },
-        h('div', { className: 'file-name', title: upload.file.name }, upload.file.name),
-        h('div', { className: failed ? 'file-detail file-detail-error' : 'file-detail' }, detail),
-        !failed && h('div', { className: 'progress' }, h('div', { className: 'progress-bar' })),
-      ),
-      h(
-        'div',
-        { className: 'file-actions' },
-        failed &&
-          upload.retryable &&
-          h('button', { className: 'btn btn-ghost btn-small', type: 'button', onclick: () => retryUpload(upload) }, '重试'),
+        { className: 'file-card' },
         h(
-          'button',
-          { className: 'btn btn-ghost btn-small', type: 'button', onclick: () => removeUpload(upload) },
-          failed ? '移除' : '取消',
+          'div',
+          { className: 'file-row' },
+          h('div', { className: 'file-ext', 'aria-hidden': 'true' }, fileExtension(upload.file.name)),
+          h(
+            'div',
+            { className: 'file-info' },
+            h('div', { className: 'file-name', title: upload.file.name }, upload.file.name),
+            h('div', { className: failed ? 'file-detail file-detail-error' : 'file-detail' }, detail),
+            !failed && h('div', { className: 'progress' }, h('div', { className: 'progress-bar' })),
+          ),
+          h(
+            'div',
+            { className: 'file-actions' },
+            failed &&
+              upload.retryable &&
+              h('button', { className: 'btn btn-ghost btn-small', type: 'button', onclick: () => retryUpload(upload) }, '重试'),
+            h('button', { className: 'btn btn-ghost btn-small', type: 'button', onclick: () => removeUpload(upload) }, failed ? '移除' : '取消'),
+          ),
         ),
       ),
     ),
@@ -382,20 +431,22 @@ function updateUploadProgress(upload: Upload): void {
 
 function renderMessages(forceBottom = false): void {
   const distanceToBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
-  const stick = forceBottom || distanceToBottom < STICK_TO_BOTTOM_PX;
+  const stick = forceBottom || state.stickToBottom || distanceToBottom < STICK_TO_BOTTOM_PX;
+  state.stickToBottom = false;
+  lastUserLook = userLook();
 
-  const list = conversationMessages(activeConversation);
-  const activeUploads = uploads.filter((upload) => upload.to === activeConversation);
+  const list = conversationMessages(state.active);
+  const activeUploads = uploads.filter((upload) => upload.to === state.active);
   const nodes: Node[] = [];
 
   if (list.length === 0 && activeUploads.length === 0) {
-    nodes.push(h('div', { className: 'empty-chat' }, '还没有消息。可以直接输入文字，或把文件拖到这里发送。'));
+    nodes.push(h('div', { className: 'empty-chat' }, '还没有消息。可以直接输入文字、发表情，或把文件拖到这里。'));
   }
   let lastDay = '';
   for (const message of list) {
     const key = dayKey(message.at);
     if (key !== lastDay) {
-      nodes.push(h('div', { className: 'day-divider' }, formatDay(message.at)));
+      nodes.push(h('div', { className: 'day-divider' }, h('span', {}, formatDay(message.at))));
       lastDay = key;
     }
     nodes.push(renderMessage(message));
@@ -407,6 +458,11 @@ function renderMessages(forceBottom = false): void {
   if (stick) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+/** 会影响消息显示的同事信息：头像、昵称、气泡 */
+function userLook(): string {
+  return state.users.map((user) => `${user.id}:${user.name}:${user.avatar}:${user.bubble}`).join('|');
+}
+
 function renderAll(forceBottom = false): void {
   markActiveAsRead();
   renderSidebar();
@@ -416,16 +472,137 @@ function renderAll(forceBottom = false): void {
 }
 
 function selectConversation(conversation: Recipient): void {
-  activeConversation = conversation;
+  state.active = conversation;
+  closePopovers();
   renderAll(true);
   messageInput.focus();
 }
 
-// ---------- 发送文字 ----------
+// ---------- 输入栏的弹出菜单 ----------
+
+const stickerPanel = createStickerPanel((sticker: StickerRef) => void sendContent({ sticker }));
+byId('composer-popovers').append(stickerPanel.element);
+
+function closePopovers(): void {
+  stickerPanel.close();
+  moreMenu.hidden = true;
+  effectMenu.hidden = true;
+  stickerButton.setAttribute('aria-expanded', 'false');
+  moreButton.setAttribute('aria-expanded', 'false');
+  effectButton.setAttribute('aria-expanded', 'false');
+}
+
+function togglePopover(button: HTMLButtonElement, show: () => boolean): void {
+  const wasOpen = button.getAttribute('aria-expanded') === 'true';
+  closePopovers();
+  if (!wasOpen) button.setAttribute('aria-expanded', String(show()));
+}
+
+stickerButton.addEventListener('click', () =>
+  togglePopover(stickerButton, () => {
+    stickerPanel.toggle();
+    return true;
+  }),
+);
+
+moreButton.addEventListener('click', () =>
+  togglePopover(moreButton, () => {
+    moreMenu.hidden = false;
+    return true;
+  }),
+);
+
+effectButton.addEventListener('click', () =>
+  togglePopover(effectButton, () => {
+    effectMenu.hidden = false;
+    return true;
+  }),
+);
+
+// 更多菜单：投票、接龙、大转盘、五子棋
+const moreActions: [string, string, () => void][] = [
+  ['📊', '投票', () => openPollDialog(state.active)],
+  ['📝', '接龙', () => openRelayDialog(state.active)],
+  ['🎡', '大转盘', () => openWheelDialog(state.active)],
+  ['⚫', '五子棋', () => startGomoku(state.active)],
+];
+moreMenu.replaceChildren(
+  ...moreActions.map(([icon, label, action]) =>
+    h(
+      'button',
+      {
+        className: 'menu-item',
+        type: 'button',
+        onclick: () => {
+          closePopovers();
+          action();
+        },
+      },
+      h('span', { className: 'menu-icon', 'aria-hidden': 'true' }, icon),
+      label,
+    ),
+  ),
+);
+
+// 特效菜单：选中后在输入框上方显示，下一条文字消息带上这个特效
+function setPendingEffect(id: string | null): void {
+  pendingEffect = id;
+  const effect = effectInfo(id ?? undefined);
+  effectChip.hidden = !effect;
+  effectButton.classList.toggle('active', Boolean(effect));
+  if (effect) {
+    effectChip.replaceChildren(
+      `✨ 下一条消息使用「${effect.name}」特效`,
+      h('button', { className: 'chip-close', type: 'button', 'aria-label': '取消特效', onclick: () => setPendingEffect(null) }, '×'),
+    );
+  }
+}
+
+effectMenu.replaceChildren(
+  ...(['bubble', 'screen'] as const).flatMap((kind) => [
+    h('div', { className: 'menu-label' }, kind === 'bubble' ? '气泡特效' : '全屏特效'),
+    ...EFFECTS.filter((effect) => effect.kind === kind).map((effect) =>
+      h(
+        'button',
+        {
+          className: 'menu-item',
+          type: 'button',
+          onclick: () => {
+            closePopovers();
+            setPendingEffect(effect.id);
+            messageInput.focus();
+          },
+        },
+        effect.name,
+      ),
+    ),
+  ]),
+);
+
+document.addEventListener('click', (event) => {
+  // 用事件路径判断，而不是 contains：点表情分类时面板会重画，被点的按钮已经不在页面上了
+  const path = event.composedPath();
+  const inside = [stickerPanel.element, moreMenu, effectMenu, stickerButton, moreButton, effectButton].some((el) => path.includes(el));
+  if (!inside) closePopovers();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closePopovers();
+});
+
+// ---------- 发送 ----------
 
 function resizeInput(): void {
   messageInput.style.height = 'auto';
   messageInput.style.height = `${messageInput.scrollHeight + 2}px`;
+}
+
+async function sendContent(input: api.MessageInput): Promise<void> {
+  try {
+    applyMessage(await api.sendMessage(state.active, input));
+  } catch (error) {
+    handleError(error);
+  }
 }
 
 async function submitMessage(): Promise<void> {
@@ -434,12 +611,12 @@ async function submitMessage(): Promise<void> {
   isSending = true;
   sendButton.disabled = true;
   try {
-    addMessage(await api.sendText(activeConversation, text));
+    applyMessage(await api.sendMessage(state.active, pendingEffect ? { text, effect: pendingEffect } : { text }));
     messageInput.value = '';
+    setPendingEffect(null);
     resizeInput();
-    renderAll(true);
   } catch (error) {
-    if (!handleUnauthorized(error)) showToast(messageOf(error));
+    handleError(error);
   } finally {
     isSending = false;
     sendButton.disabled = false;
@@ -452,14 +629,14 @@ async function submitMessage(): Promise<void> {
 function enqueueFiles(files: Iterable<File>): void {
   let added = false;
   for (const file of files) {
-    const tooLarge = file.size > maxFileBytes;
+    const tooLarge = file.size > state.limits.maxFileBytes;
     uploads.push({
       id: crypto.getRandomValues(new Uint32Array(2)).join('-'),
       file,
-      to: activeConversation,
+      to: state.active,
       status: tooLarge ? 'failed' : 'queued',
       progress: 0,
-      error: tooLarge ? `超过 ${formatSize(maxFileBytes)} 的大小限制，无法发送` : undefined,
+      error: tooLarge ? `超过 ${formatSize(state.limits.maxFileBytes)} 的大小限制，无法发送` : undefined,
       retryable: !tooLarge,
     });
     added = true;
@@ -483,12 +660,12 @@ async function pumpUploads(): Promise<void> {
   try {
     const message = await upload.handle.done;
     uploads = uploads.filter((item) => item !== upload);
-    addMessage(message);
-    renderAll(upload.to === activeConversation);
+    applyMessage(message);
   } catch (error) {
     if (error instanceof api.UploadCancelled) {
       uploads = uploads.filter((item) => item !== upload);
-    } else if (handleUnauthorized(error)) {
+    } else if (error instanceof api.ApiError && error.status === 401) {
+      showLogin();
       return;
     } else {
       upload.status = 'failed';
@@ -534,7 +711,7 @@ window.addEventListener('dragenter', (event) => {
   if (workspaceView.hidden || !isFileDrag(event)) return;
   event.preventDefault();
   dragDepth += 1;
-  dropText.textContent = `松开发送给${conversationName(activeConversation)}`;
+  dropText.textContent = `松开发送给${conversationName(state.active)}`;
   dropOverlay.hidden = false;
 });
 
@@ -553,7 +730,8 @@ window.addEventListener('drop', (event) => {
   if (!isFileDrag(event)) return;
   event.preventDefault();
   hideDropOverlay();
-  if (workspaceView.hidden || !event.dataTransfer) return;
+  // 弹窗打开时（比如在选聊天背景）不处理，避免误发
+  if (workspaceView.hidden || !event.dataTransfer || document.querySelector('dialog[open]')) return;
 
   const files: File[] = [];
   let hasFolder = false;
@@ -572,33 +750,41 @@ window.addEventListener('drop', (event) => {
 
 // ---------- 服务器推送 ----------
 
-function addMessage(message: ChatMessage): void {
-  messages.set(message.id, message);
-}
-
 function handleServerEvent(event: ServerEvent): void {
   if (event.type === 'users') {
-    users = event.users;
-    me = users.find((user) => user.id === me?.id) ?? me;
+    state.users = event.users;
+    state.me = state.users.find((user) => user.id === state.me?.id) ?? state.me;
     renderSidebar();
     renderChatHead();
+    // 只有头像、昵称、气泡变了才重画消息，单纯的上下线不重画，免得打断正在选中的文字
+    if (userLook() !== lastUserLook) renderMessages();
     return;
   }
-  addMessage(event.message);
-  renderAll();
+  if (event.type === 'deleted') {
+    removeMessage(event.id);
+    return;
+  }
+  if (event.type === 'stickers') {
+    state.stickers = event.stickers;
+    stickerPanel.refresh();
+    renderMessages();
+    return;
+  }
+  applyMessage(event.message);
 }
 
 /** 把服务器返回的完整数据合并进来。用合并而不是替换，避免覆盖刚通过推送收到的消息 */
 function applySession(session: SessionInfo): void {
-  me = session.me;
-  users = session.users;
-  maxFileBytes = session.maxFileBytes;
-  for (const message of session.messages) addMessage(message);
+  state.me = session.me;
+  state.users = session.users;
+  state.stickers = session.stickers;
+  state.limits = session.limits;
+  for (const message of session.messages) state.messages.set(message.id, message);
   if (readMarks.firstSeen === undefined) {
     readMarks.firstSeen = session.messages.reduce((latest, message) => Math.max(latest, message.at), 0);
     writeStorage(READ_MARKS_KEY, JSON.stringify(readMarks));
   }
-  if (activeConversation !== GROUP && !userById(activeConversation)) activeConversation = GROUP;
+  if (state.active !== GROUP && !userById(state.active)) state.active = GROUP;
 }
 
 /** 重新拉取数据。连接刚建立或断线重连后调用，补上断线期间错过的内容 */
@@ -607,7 +793,7 @@ async function resync(): Promise<void> {
     applySession(await api.fetchSession());
     renderAll();
   } catch (error) {
-    handleUnauthorized(error);
+    if (error instanceof api.ApiError && error.status === 401) showLogin();
   }
 }
 
@@ -637,13 +823,14 @@ function connectEvents(): void {
 function showLogin(): void {
   events?.close();
   events = null;
-  me = null;
-  users = [];
-  messages.clear();
+  state.me = null;
+  state.users = [];
+  state.messages.clear();
   uploads.forEach((upload) => upload.handle?.cancel());
   uploads = [];
-  activeConversation = GROUP;
-  if (profileDialog.open) profileDialog.close();
+  state.active = GROUP;
+  closePopovers();
+  document.querySelectorAll('dialog[open]').forEach((dialog) => (dialog as HTMLDialogElement).close());
   workspaceView.hidden = true;
   loginView.hidden = false;
   document.title = APP_TITLE;
@@ -660,6 +847,23 @@ function showWorkspace(session: SessionInfo): void {
   messageInput.focus();
 }
 
+async function logout(): Promise<void> {
+  try {
+    await api.logout();
+  } catch {
+    // 服务器连不上时也回到登录页
+  }
+  // 退出后清掉已读记录，下一位登录的人从自己的视角重新开始
+  readMarks = { conversations: {} };
+  writeStorage(READ_MARKS_KEY, JSON.stringify(readMarks));
+  showLogin();
+}
+
+onRender(() => {
+  if (!workspaceView.hidden) renderAll();
+});
+onUnauthorized(showLogin);
+
 loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   loginError.hidden = true;
@@ -675,41 +879,9 @@ loginForm.addEventListener('submit', async (event) => {
   }
 });
 
-// ---------- 个人设置 ----------
-
-profileButton.addEventListener('click', () => {
-  profileName.value = me?.name ?? '';
-  profileError.hidden = true;
-  profileDialog.showModal();
-  profileName.select();
-});
-
-byId('profile-cancel').addEventListener('click', () => profileDialog.close());
-
-profileForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  profileError.hidden = true;
-  try {
-    await api.rename(profileName.value);
-    profileDialog.close();
-    await resync();
-  } catch (error) {
-    if (handleUnauthorized(error)) return;
-    profileError.textContent = messageOf(error);
-    profileError.hidden = false;
-  }
-});
-
-byId('logout-button').addEventListener('click', async () => {
-  try {
-    await api.logout();
-  } catch {
-    // 服务器连不上时也回到登录页
-  }
-  // 退出后清掉已读记录的归属，下一位登录的人从自己的视角重新开始
-  readMarks = { conversations: {} };
-  writeStorage(READ_MARKS_KEY, JSON.stringify(readMarks));
-  showLogin();
+profileButton.addEventListener('click', () => openMyProfile(() => void logout()));
+chatTitle.addEventListener('click', () => {
+  if (state.active !== GROUP) openUserCard(state.active, selectConversation);
 });
 
 // ---------- 输入框 ----------
@@ -745,7 +917,7 @@ document.addEventListener('visibilitychange', () => {
 let lastExpiryCheck = Date.now();
 window.setInterval(() => {
   const now = Date.now();
-  const crossed = [...messages.values()].some(
+  const crossed = [...state.messages.values()].some(
     ({ file }) => file && file.expiresAt > lastExpiryCheck && file.expiresAt <= now,
   );
   lastExpiryCheck = now;
@@ -774,6 +946,7 @@ window.addEventListener('beforeunload', (event) => {
 
 async function start(): Promise<void> {
   applyTheme(readStorage(THEME_KEY));
+  void applyChatBackground();
   try {
     showWorkspace(await api.fetchSession());
   } catch (error) {
